@@ -1,0 +1,26 @@
+// Tawadu — main window.
+// Skeleton only: the real screens (home / settings / athkar / voice packs) are
+// built from the design tokens in design/brand.md in Phase 1.
+
+export component MainWindow inherits Window {
+    title: "Tawadu";
+    width: 960px;
+    height: 600px;
+    background: #F6F1E8;
+
+    VerticalLayout {
+        padding: 24px;
+        spacing: 12px;
+
+        Text {
+            text: "Tawadu · تواضع";
+            font-size: 28px;
+        }
+
+        Text {
+            text: "Skeleton — prayer times arrive in Phase 0.";
+            font-size: 15px;
+            color: #6E665A;
+        }
+    }
+}

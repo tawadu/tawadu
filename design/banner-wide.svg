@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 640" role="img" aria-label="Tawadu — wide banner">
+  <rect width="1920" height="640" fill="#14110D"/>
+  <g opacity="0.6" stroke="#332C24" stroke-width="1">
+    <path d="M0 120 H1920 M0 560 H1920 M700 0 V640 M1380 0 V640"/>
+  </g>
+  <g transform="translate(760,240)">
+    <path d="M20 65 V37 a20 20 0 0 1 40 0 V65" stroke="#8FC3AE" stroke-width="5.5" stroke-linecap="round" fill="none"/>
+    <circle cx="40" cy="56" r="5.8" fill="#8FC3AE"/>
+  </g>
+  <text x="844" y="330" font-family="'IBM Plex Sans',sans-serif" font-size="110" font-weight="600" letter-spacing="-4" fill="#EFE7DA">Tawadu</text>
+  <text x="846" y="402" font-family="'IBM Plex Sans Arabic',serif" font-size="58" font-weight="500" fill="#8FC3AE">تواضع</text>
+  <text x="760" y="486" font-family="'IBM Plex Sans',sans-serif" font-size="28" fill="#A2988A">Prayer times &#183; Iqamah &#183; Adhan &#183; Athkar</text>
+</svg>

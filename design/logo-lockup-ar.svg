@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 64" fill="none" role="img" aria-label="تواضع">
+  <path d="M16 52 V30 a16 16 0 0 1 32 0 V52" stroke="currentColor" stroke-width="4.5" stroke-linecap="round"/>
+  <circle cx="32" cy="45" r="4.6" fill="currentColor"/>
+  <text x="58" y="46" font-family="'IBM Plex Sans Arabic','Amiri',serif" font-size="31" font-weight="600" fill="currentColor">تواضع</text>
+</svg>

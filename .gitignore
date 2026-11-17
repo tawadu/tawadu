@@ -1,0 +1,41 @@
+# --- Rust ---
+/target
+**/*.rs.bk
+*.pdb
+
+# --- Cargo ---
+# (Cargo.lock IS committed — this is an application workspace)
+
+# --- Windows ---
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.msi
+*.msix
+*.appx
+
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# --- Linux ---
+*~
+.directory
+
+# --- Editors / IDEs ---
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- Environment ---
+.env
+.envrc
+
+# --- Build artefacts ---
+dist/
+build/
+*.exe

@@ -1,0 +1,12 @@
+[package]
+name = "tawadu-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rodio.workspace = true
+symphonia.workspace = true
+hound.workspace = true
+rubato.workspace = true
+log.workspace = true
