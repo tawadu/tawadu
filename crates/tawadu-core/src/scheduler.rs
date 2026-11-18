@@ -28,6 +28,16 @@ impl EventKind {
             EventKind::AthkarWindow => 3,
         }
     }
+
+    /// Stable key for logs.
+    pub fn key(self) -> &'static str {
+        match self {
+            EventKind::PreAlert => "pre_alert",
+            EventKind::Prayer => "prayer",
+            EventKind::Iqamah => "iqamah",
+            EventKind::AthkarWindow => "athkar_window",
+        }
+    }
 }
 
 /// One thing that happens at a moment.
@@ -147,6 +157,22 @@ impl Timeline {
         self.events.iter().find(|event| event.at > now)
     }
 
+    /// Every event that became due in `(after, now]`, in order, provided it is not
+    /// older than `tolerance`.
+    ///
+    /// `next_after` only looks forward, so a machine that slept past several events
+    /// would hide all but the one the scheduler was waiting on — and that one is
+    /// often the *pre-alert*, leaving the athan itself unannounced. The scheduler
+    /// sweeps this range after every wake instead of advancing by `next_after`.
+    pub fn due(&self, after: DateTime<Utc>, now: DateTime<Utc>, tolerance: Duration) -> Vec<Event> {
+        self.events
+            .iter()
+            .filter(|event| event.at > after && event.at <= now)
+            .filter(|event| now.signed_duration_since(event.at) <= tolerance)
+            .cloned()
+            .collect()
+    }
+
     /// Only the prayer events, in order.
     pub fn prayers(&self) -> impl Iterator<Item = &Event> {
         self.events
@@ -241,6 +267,38 @@ mod tests {
             .map(|e| e.label)
             .collect();
         assert_eq!(labels, ["Morning athkar", "Evening athkar", "Sleep athkar"]);
+    }
+
+    #[test]
+    fn due_finds_the_athan_that_slept_through_the_pre_alert() {
+        // Asleep across the Fajr pre-alert (01:39) and Fajr (01:49), awake at 01:50.
+        // The pre-alert is ~11 min stale and must be dropped; the athan is 1 min
+        // late and must still fire. `next_after` alone would drop both.
+        let t = timeline();
+        let after = Utc.with_ymd_and_hms(2026, 11, 17, 1, 38, 0).unwrap();
+        let now = Utc.with_ymd_and_hms(2026, 11, 17, 1, 50, 0).unwrap();
+        let fired = t.due(after, now, chrono::Duration::seconds(120));
+        assert_eq!(fired.len(), 1);
+        assert_eq!(fired[0].kind, EventKind::Prayer);
+        assert_eq!(fired[0].label, "Fajr");
+    }
+
+    #[test]
+    fn due_is_empty_when_nothing_has_passed() {
+        let t = timeline();
+        let at = Utc.with_ymd_and_hms(2026, 11, 17, 1, 30, 0).unwrap();
+        assert!(t.due(at, at, chrono::Duration::seconds(120)).is_empty());
+    }
+
+    #[test]
+    fn due_keeps_every_event_within_tolerance_in_order() {
+        let t = timeline();
+        let after = Utc.with_ymd_and_hms(2026, 11, 17, 1, 30, 0).unwrap();
+        // 01:49:30 is after the Fajr pre-alert (01:39) but the pre-alert is stale.
+        let now = Utc.with_ymd_and_hms(2026, 11, 17, 1, 49, 30).unwrap();
+        let fired = t.due(after, now, chrono::Duration::seconds(120));
+        let labels: Vec<_> = fired.iter().map(|e| e.label).collect();
+        assert_eq!(labels, ["Fajr"]);
     }
 
     #[test]

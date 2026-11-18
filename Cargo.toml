@@ -30,8 +30,9 @@ rubato = "0.15"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "fs"] }
 # --- ui ---
 slint = "1"
-# --- desktop integration (added when wiring the app) ---
-# tray-icon, notify-rust, auto-launch, single-instance, rfd, global-hotkey
+# --- desktop integration ---
+notify-rust = "4"
+# tray-icon, auto-launch, single-instance, rfd, global-hotkey
 # --- misc ---
 log = "0.4"
 env_logger = "0.11"

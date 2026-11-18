@@ -1,6 +1,7 @@
 //! Typed settings model, persisted in SQLite.
 
 use crate::locations::{find_city, Location};
+use crate::notify::NotificationSettings;
 use crate::prayer::Coordinates;
 use crate::prayer::PrayerConfig;
 use crate::scheduler::IqamahOffsets;
@@ -79,6 +80,10 @@ pub struct Settings {
     pub language: Language,
     pub start_at_login: bool,
     pub athan_volume: f32,
+    /// `serde(default)` so a settings blob written before notifications existed
+    /// still loads instead of falling back to defaults.
+    #[serde(default)]
+    pub notifications: NotificationSettings,
 }
 
 impl Default for Settings {
@@ -100,6 +105,7 @@ impl Default for Settings {
             language: Language::default(),
             start_at_login: false,
             athan_volume: 0.8,
+            notifications: NotificationSettings::default(),
         }
     }
 }
@@ -131,6 +137,14 @@ mod tests {
         let loc = s.location.resolve();
         assert_eq!(loc.name, "Riyadh");
         assert_eq!(loc.timezone_name(), "Asia/Riyadh");
+    }
+
+    #[test]
+    fn a_blob_without_notifications_still_loads() {
+        let mut value = serde_json::to_value(Settings::default()).unwrap();
+        value.as_object_mut().unwrap().remove("notifications");
+        let back: Settings = serde_json::from_value(value).unwrap();
+        assert_eq!(back.notifications, NotificationSettings::default());
     }
 
     #[test]

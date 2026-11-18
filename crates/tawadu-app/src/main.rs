@@ -8,13 +8,15 @@
 
 mod cli;
 
-use std::sync::{Arc, Mutex};
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use slint::{ModelRc, SharedString, Timer, TimerMode, VecModel};
 use tawadu_core::hijri::from_gregorian;
 use tawadu_core::locations::{find_city, Location, CITIES};
+use tawadu_core::notify::{self, NotificationKind};
 use tawadu_core::prayer::{self, HighLatitudeRule, Madhab, Method, Prayer, PrayerTimes, Rounding};
 use tawadu_core::scheduler::{self, EventKind, IqamahOffsets, Timeline};
 use tawadu_core::settings::{Language, Settings, Theme};
@@ -48,6 +50,8 @@ struct AppState {
     settings: Settings,
     storage: Option<Storage>,
     status: String,
+    /// Tells the scheduler to recompute now rather than at the end of its slice.
+    wake: Option<Arc<mpsc::Sender<()>>>,
 }
 
 /// Decode a serde snake_case key back into a config value.
@@ -192,7 +196,7 @@ fn hhmm(location: &Location, instant: chrono::DateTime<Utc>) -> String {
 }
 
 fn countdown(to: chrono::DateTime<Utc>) -> String {
-    let remaining = to.signed_duration_since(Utc::now());
+    let remaining = to.signed_duration_since(now());
     let total = remaining.num_seconds().max(0);
     format!(
         "{:02}:{:02}:{:02}",
@@ -203,9 +207,13 @@ fn countdown(to: chrono::DateTime<Utc>) -> String {
 }
 
 /// Compute today's times plus the day's timeline for a location and settings.
+///
+/// Yesterday's events are merged in because a late Isha iqamah, or the sleep
+/// athkar window at Isha+30, can fall after local midnight — and today's timeline
+/// does not contain them. That only happens at high latitude, which is exactly
+/// where the app promises not to invent or drop a time.
 fn day(location: &Location, settings: &Settings) -> (PrayerTimes, Timeline) {
-    let date = location.local(Utc::now()).date_naive();
-    let times = prayer::compute(date, location.coordinates, &settings.config);
+    let date = location.local(now()).date_naive();
     let iqamah = IqamahOffsets {
         fajr: settings.iqamah.fajr,
         dhuhr: settings.iqamah.dhuhr,
@@ -213,8 +221,20 @@ fn day(location: &Location, settings: &Settings) -> (PrayerTimes, Timeline) {
         maghrib: settings.iqamah.maghrib,
         isha: settings.iqamah.isha,
     };
-    let timeline = scheduler::build(times, &iqamah, settings.pre_alert_minutes);
-    (timeline.times.clone(), timeline)
+
+    let times = prayer::compute(date, location.coordinates, &settings.config);
+    let mut events = scheduler::build(times.clone(), &iqamah, settings.pre_alert_minutes).events;
+
+    let yesterday = date - chrono::Duration::days(1);
+    let ytimes = prayer::compute(yesterday, location.coordinates, &settings.config);
+    events.extend(scheduler::build(ytimes, &iqamah, settings.pre_alert_minutes).events);
+
+    events.sort_by(|a, b| {
+        a.at.cmp(&b.at)
+            .then_with(|| a.kind.priority().cmp(&b.kind.priority()))
+    });
+
+    (times.clone(), Timeline { times, events })
 }
 
 /// The next obligatory prayer, rolling into tomorrow when today is done.
@@ -223,10 +243,10 @@ fn next_prayer(
     location: &Location,
     settings: &Settings,
 ) -> Option<(Prayer, chrono::DateTime<Utc>)> {
-    if let Some(next) = times.next_obligatory(Utc::now()) {
+    if let Some(next) = times.next_obligatory(now()) {
         return Some(next);
     }
-    let tomorrow = location.local(Utc::now()).date_naive() + chrono::Duration::days(1);
+    let tomorrow = location.local(now()).date_naive() + chrono::Duration::days(1);
     let times = prayer::compute(tomorrow, location.coordinates, &settings.config);
     times.fajr.map(|at| (Prayer::Fajr, at))
 }
@@ -236,7 +256,7 @@ fn apply_home(ui: &MainWindow, state: &AppState) {
     let location = state.location();
     let (times, timeline) = day(&location, &state.settings);
     let next = next_prayer(&times, &location, &state.settings);
-    let now = Utc::now();
+    let now = now();
 
     ui.set_location_name(location.name.clone().into());
     ui.set_location_name_ar(location.name_ar.clone().into());
@@ -266,9 +286,10 @@ fn apply_home(ui: &MainWindow, state: &AppState) {
         .unwrap_or_else(|| "Set your mosque's iqamah offsets".to_string());
     ui.set_next_iqamah(iqamah_text.into());
 
-    // Placeholder until the athkar engine lands (Phase 4).
+    // A real dhikr from Hisn al-Muslim, shown statically until the athkar engine
+    // lands (Phase 4). It deliberately carries no progress counter: a count next
+    // to "one hundred times" that invents its own number is a visible lie.
     ui.set_athkar_text("سُبْحَانَ اللَّهِ وَبِحَمْدِهِ · مِائَةَ مَرَّةٍ".into());
-    ui.set_athkar_progress("4 / 9".into());
 
     let order = [
         Prayer::Fajr,
@@ -418,6 +439,195 @@ impl AppState {
             None => "Saving is unavailable".to_string(),
         };
     }
+
+    /// A setting changed, so the day timeline may have changed with it.
+    fn changed(&self) {
+        if let Some(wake) = &self.wake {
+            let _ = wake.send(());
+        }
+    }
+}
+
+/// Where "now" comes from.
+///
+/// `TAWADU_DEBUG_NOW` (an RFC 3339 instant) starts the clock at that moment and
+/// then lets it advance in real time, so a notification can be exercised without
+/// waiting for a real prayer. Unset, this is the system clock.
+///
+/// The rest of the app reads `now()` rather than the clock directly: a frozen
+/// clock would make the scheduler wait forever for an event that is already due.
+static DEBUG_NOW: OnceLock<Option<(DateTime<Utc>, std::time::Instant)>> = OnceLock::new();
+
+/// Multiplies real elapsed time. `12` makes a 60-second wait look like twelve
+/// minutes to the clock, which is how a machine that slept past an event is
+/// exercised without putting the PC to sleep. Unset = 1.0.
+static DEBUG_SCALE: OnceLock<f64> = OnceLock::new();
+
+fn now() -> DateTime<Utc> {
+    let started = DEBUG_NOW.get_or_init(|| {
+        std::env::var("TAWADU_DEBUG_NOW")
+            .ok()
+            .and_then(|value| value.parse::<DateTime<Utc>>().ok())
+            .map(|base| (base, std::time::Instant::now()))
+    });
+    match started {
+        Some((base, at)) => {
+            let scale = *DEBUG_SCALE.get_or_init(|| {
+                std::env::var("TAWADU_DEBUG_TIME_SCALE")
+                    .ok()
+                    .and_then(|value| value.parse::<f64>().ok())
+                    .unwrap_or(1.0)
+            });
+            let elapsed = Duration::from_secs_f64(at.elapsed().as_secs_f64() * scale);
+            *base + chrono::Duration::from_std(elapsed).unwrap_or_default()
+        }
+        None => Utc::now(),
+    }
+}
+
+/// The scheduler never sleeps longer than this, so a clock change, a wake from
+/// sleep or a settings edit is picked up within a minute.
+const MAX_SLICE: Duration = Duration::from_secs(60);
+/// An event the machine slept through is still worth announcing, but only just.
+const LATE_TOLERANCE_SECONDS: i64 = 120;
+/// How long the in-app banner stays up.
+const BANNER_MS: u64 = 8000;
+
+/// How long the in-app banner stays up. `TAWADU_DEBUG_BANNER_MS` overrides it so a
+/// screenshot can be taken without racing the auto-hide.
+fn banner_hold() -> Duration {
+    static HOLD: OnceLock<u64> = OnceLock::new();
+    let ms = *HOLD.get_or_init(|| {
+        std::env::var("TAWADU_DEBUG_BANNER_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(BANNER_MS)
+    });
+    Duration::from_millis(ms)
+}
+
+/// What the scheduler thread hands to the UI thread.
+enum Notice {
+    Banner { title: String, body: String },
+}
+
+fn event_kind(kind: EventKind) -> Option<NotificationKind> {
+    match kind {
+        EventKind::PreAlert => Some(NotificationKind::PreAlert),
+        EventKind::Prayer => Some(NotificationKind::Athan),
+        EventKind::Iqamah => Some(NotificationKind::Iqamah),
+        EventKind::AthkarWindow => Some(NotificationKind::Athkar),
+    }
+}
+
+/// Decide whether to announce an event, and with what words. `None` means the
+/// user's switches say stay quiet.
+fn announce(
+    event: &scheduler::Event,
+    location: &Location,
+    settings: &Settings,
+) -> Option<(String, String)> {
+    let kind = event_kind(event.kind)?;
+    let local_now = location.local(now());
+    if !notify::should_notify(kind, &settings.notifications, local_now.time()) {
+        return None;
+    }
+    let at = location.local(event.at).format("%H:%M").to_string();
+    let (title, body) = match kind {
+        NotificationKind::PreAlert => (
+            format!("{} in {} min", event.label, settings.pre_alert_minutes),
+            format!("{} at {} · {}", event.label, at, location.name),
+        ),
+        NotificationKind::Athan => (
+            format!("Athan · {}", event.label),
+            format!("It is time for {} prayer · {}", event.label, at),
+        ),
+        NotificationKind::Iqamah => (
+            format!("Iqamah · {}", event.label),
+            "The prayer has started at the mosque".to_string(),
+        ),
+        NotificationKind::Athkar => (
+            event.label.to_string(),
+            "Your athkar window is open".to_string(),
+        ),
+        NotificationKind::System => return None,
+    };
+    Some((title, body))
+}
+
+/// Send an OS notification. Returns `false` when the platform has no usable
+/// notification service; the in-app banner then carries the message.
+fn os_notify(title: &str, body: &str) -> bool {
+    match notify_rust::Notification::new()
+        .appname("Tawadu")
+        .summary(title)
+        .body(body)
+        .show()
+    {
+        Ok(_) => true,
+        Err(error) => {
+            log::warn!("OS notification unavailable ({error}); the in-app banner carried it");
+            false
+        }
+    }
+}
+
+/// Sleep until the next event, fire it, advance.
+///
+/// The loop recomputes the timeline after every slice, which is what makes a
+/// clock change, a wake from sleep and a settings edit all correct without a
+/// platform-specific wake-up signal.
+fn spawn_scheduler(
+    state: Arc<Mutex<AppState>>,
+    wake: mpsc::Receiver<()>,
+    notices: mpsc::Sender<Notice>,
+) {
+    std::thread::Builder::new()
+        .name("tawadu-scheduler".into())
+        .spawn(move || {
+            // The instant up to which every event has been considered. It only
+            // advances after a sweep, which is what stops a machine that slept past
+            // several events from hiding all but the one it was waiting on.
+            let mut watermark = now();
+            loop {
+                let (location, settings) = {
+                    let guard = state.lock().unwrap();
+                    (guard.location(), guard.settings.clone())
+                };
+                let (_, timeline) = day(&location, &settings);
+                let next = timeline.next_after(watermark).cloned();
+
+                let wait = next
+                    .as_ref()
+                    .map(|event| (event.at - watermark).to_std().unwrap_or(Duration::ZERO))
+                    .unwrap_or(MAX_SLICE)
+                    .min(MAX_SLICE);
+
+                match wake.recv_timeout(wait) {
+                    Ok(()) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                }
+
+                let fired_at = now();
+                for event in timeline.due(
+                    watermark,
+                    fired_at,
+                    chrono::Duration::seconds(LATE_TOLERANCE_SECONDS),
+                ) {
+                    if let Some((title, body)) = announce(&event, &location, &settings) {
+                        log::info!("firing {} · {} — {}", event.kind.key(), event.at, title);
+                        let _ = notices.send(Notice::Banner {
+                            title: title.clone(),
+                            body: body.clone(),
+                        });
+                        os_notify(&title, &body);
+                    }
+                }
+                watermark = fired_at;
+            }
+        })
+        .expect("spawn the scheduler thread");
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -444,7 +654,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings,
         storage,
         status: String::new(),
+        wake: None,
     }));
+
+    let (wake_tx, wake_rx) = mpsc::channel::<()>();
+    state.lock().unwrap().wake = Some(Arc::new(wake_tx));
 
     let ui = MainWindow::new()?;
     apply_theme(&ui, state.lock().unwrap().settings.theme);
@@ -459,6 +673,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let state = state.lock().unwrap();
             if let Some(ui) = weak.upgrade() {
                 apply_settings(&ui, &state);
+                state.changed();
                 ui.set_page("settings".into());
             }
         });
@@ -494,7 +709,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if let Some(ui) = weak.upgrade() {
                 apply_home(&ui, &state);
+                state.changed();
                 apply_settings(&ui, &state);
+                state.changed();
             }
         });
     }
@@ -508,7 +725,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if let Some(ui) = weak.upgrade() {
                 apply_home(&ui, &state);
+                state.changed();
                 apply_settings(&ui, &state);
+                state.changed();
             }
         });
     }
@@ -522,7 +741,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if let Some(ui) = weak.upgrade() {
                 apply_home(&ui, &state);
+                state.changed();
                 apply_settings(&ui, &state);
+                state.changed();
             }
         });
     }
@@ -536,7 +757,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if let Some(ui) = weak.upgrade() {
                 apply_home(&ui, &state);
+                state.changed();
                 apply_settings(&ui, &state);
+                state.changed();
             }
         });
     }
@@ -550,7 +773,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if let Some(ui) = weak.upgrade() {
                 apply_home(&ui, &state);
+                state.changed();
                 apply_settings(&ui, &state);
+                state.changed();
             }
         });
     }
@@ -565,6 +790,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(ui) = weak.upgrade() {
                 apply_theme(&ui, state.settings.theme);
                 apply_settings(&ui, &state);
+                state.changed();
             }
         });
     }
@@ -578,6 +804,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if let Some(ui) = weak.upgrade() {
                 apply_settings(&ui, &state);
+                state.changed();
             }
         });
     }
@@ -589,7 +816,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             state.settings.pre_alert_minutes = minutes.max(0) as u32;
             if let Some(ui) = weak.upgrade() {
                 apply_home(&ui, &state);
+                state.changed();
                 apply_settings(&ui, &state);
+                state.changed();
             }
         });
     }
@@ -609,7 +838,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if let Some(ui) = weak.upgrade() {
                 apply_home(&ui, &state);
+                state.changed();
                 apply_settings(&ui, &state);
+                state.changed();
             }
         });
     }
@@ -621,6 +852,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             state.save();
             if let Some(ui) = weak.upgrade() {
                 apply_settings(&ui, &state);
+                state.changed();
             }
         });
     }
@@ -634,17 +866,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (times, _) = day(&location, &guard.settings);
         next_prayer(&times, &location, &guard.settings)
     };
+    let timer_state = Arc::clone(&state);
     let mut target = initial_target.map(|(_, at)| at);
     timer.start(TimerMode::Repeated, Duration::from_secs(1), move || {
         let Some(ui) = handle.upgrade() else {
             return;
         };
         let stale = match target {
-            Some(at) => at <= Utc::now(),
+            Some(at) => at <= now(),
             None => true,
         };
         if stale {
-            let guard = state.lock().unwrap();
+            let guard = timer_state.lock().unwrap();
             let location = guard.location();
             let (times, _) = day(&location, &guard.settings);
             match next_prayer(&times, &location, &guard.settings) {
@@ -658,6 +891,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         if let Some(at) = target {
             ui.set_countdown(countdown(at).into());
+        }
+    });
+
+    // ---- notification engine ----
+    let (notice_tx, notice_rx) = mpsc::channel::<Notice>();
+    spawn_scheduler(Arc::clone(&state), wake_rx, notice_tx);
+
+    let banner_handle = ui.as_weak();
+    let mut shown_at: Option<std::time::Instant> = None;
+    let banner_timer = Timer::default();
+    banner_timer.start(TimerMode::Repeated, Duration::from_millis(500), move || {
+        let Some(ui) = banner_handle.upgrade() else {
+            return;
+        };
+        while let Ok(notice) = notice_rx.try_recv() {
+            match notice {
+                Notice::Banner { title, body } => {
+                    ui.set_banner_title(title.into());
+                    ui.set_banner_body(body.into());
+                    ui.set_banner_visible(true);
+                    shown_at = Some(std::time::Instant::now());
+                }
+            }
+        }
+        if let Some(at) = shown_at {
+            if at.elapsed() >= banner_hold() {
+                ui.set_banner_visible(false);
+                shown_at = None;
+            }
         }
     });
 

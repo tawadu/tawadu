@@ -22,7 +22,8 @@ it beautiful and widely available.
   card, today's list, live tick, persisted settings.
 - **CI** — fmt, clippy `-D warnings` and tests on ubuntu / windows / macOS.
 - **Brand** — logo, style guide, themes, banners (`design/`).
-- **42 tests**, including a polar-day case and a far-east UTC-anchoring case.
+- **58 tests** (55 core + 3 CLI), including a polar-day case, a far-east
+  UTC-anchoring case, and a sleep/wake sweep proving the athan is not dropped.
 
 **Known gaps (the honest list)**
 
@@ -31,7 +32,7 @@ it beautiful and widely available.
 | ~~1~~ | ~~No settings screen~~ | **Done** — settings surface + SQLite write path, verified end to end |
 | 2 | Athkar card is hardcoded | It is a mock, not a feature |
 | 3 | Iqamah offsets default to `0` | No iqamah events are ever scheduled |
-| 4 | No tray, no notifications, no scheduler loop | Nothing ever alerts the user |
+| 4 | Engine landed; tray, single-instance, autostart and notification controls pending | It alerts only while the window is open, and nothing can be silenced from the UI |
 | 5 | `tawadu-audio` is an empty skeleton | No athan, no athkar audio |
 | 6 | Strings are hardcoded in `.slint` | No real i18n; RTL unverified |
 | 7 | 28 cities, no search, no GPS | Most users cannot set their town |
@@ -229,10 +230,39 @@ Do not start this before Phase 6 is done.
 
 ## 7. Immediate next steps
 
-1. ~~Phase 1 task 1–2: settings surface + write path.~~ **Done** — location search, method,
-   madhab, high-latitude rule, rounding, pre-alert, per-prayer iqamah offsets, theme and
-   language all edit and persist to SQLite. Verified end to end on a real desktop: a
-   stepper edit reached disk and survived.
-2. Remaining Phase 1: city search is prefix + substring (GPS and the full GeoNames set
-   belong to Phase 5), and storage errors should surface instead of being swallowed.
-3. Then Phase 2, the notification engine — the app's reason to exist.
+Phase 2's engine is built and verified; **Phase 2 is not closed** — see gap #4.
+
+1. **Single-instance first.** Two instances means two schedulers and two overlapping
+   athans. It is a correctness prerequisite for everything built so far.
+2. **Tray + quit**, so closing the window does not kill the scheduler. Without it the
+   Phase 2 exit criterion ("closed to the tray") cannot be met.
+3. **Notification controls UI** — the five per-kind switches and quiet hours are
+   persisted and honoured but unreachable from the interface.
+4. **Surface storage errors** (gap #8): today a corrupt blob silently becomes
+   factory defaults, so the app would confidently announce the wrong city's times.
+5. **Autostart** (opt-in, off by default).
+6. Only then Phase 3, audio. An athan with no tray and no mute is an app you cannot
+   silence — the exact complaint this project exists to fix.
+
+### Found in review, 2026-11-18
+
+A four-way review (three decision panels + a defect pass, run on a second model)
+converged on the ordering above and caught real defects:
+
+- **Fixed:** the scheduler fired only the one event it was waiting on, so a machine
+  that slept past the pre-alert *and* the athan dropped the athan — the one alert that
+  must never be missed. `Timeline::due` now sweeps `(watermark, now]` after every wake;
+  verified end to end with a 12× debug clock.
+- **Fixed:** the in-app banner had no height, so it defaulted to a 360×620 slab over
+  the left third of the window.
+- **Fixed:** the athkar card showed a fabricated "4 / 9" progress next to a real
+  dhikr that says "one hundred times" — a visible lie in a religious app. Removed.
+- **Fixed:** yesterday's timeline was discarded at local midnight, dropping a late
+  Isha iqamah or sleep-athkar window in high-latitude locations.
+- **Open:** no fired-event ledger, so a restart within 120 s re-announces an event.
+- **Open:** quiet hours are evaluated at fire time rather than event time, so a
+  late event after wake is judged against the wrong wall clock.
+- **Open:** settings save only on the حفظ button, while Phase 1 specifies a
+  debounced save-on-change. Code and doc now disagree; pick one.
+- **Note:** `notify-rust` returning `Ok` is not proof a toast appeared — on an
+  unpackaged Windows exe it needs an AUMID. The banner is the correctness floor.

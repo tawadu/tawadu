@@ -16,6 +16,7 @@ slint.workspace = true
 log.workspace = true
 env_logger.workspace = true
 clap.workspace = true
+notify-rust.workspace = true
 
 [build-dependencies]
 slint-build = "1"

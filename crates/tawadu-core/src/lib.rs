@@ -11,6 +11,7 @@
 pub mod athkar;
 pub mod hijri;
 pub mod locations;
+pub mod notify;
 pub mod prayer;
 pub mod qibla;
 pub mod scheduler;
