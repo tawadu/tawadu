@@ -285,6 +285,15 @@ impl PrayerTimes {
             .map(|prayer| (prayer, self.time(prayer)))
             .find(|(_, time)| *time > now)
     }
+
+    /// The next obligatory prayer strictly after `now` (skips sunrise and qiyam).
+    pub fn next_obligatory(&self, now: DateTime<Utc>) -> Option<(Prayer, DateTime<Utc>)> {
+        Prayer::all()
+            .into_iter()
+            .filter(|prayer| prayer.is_prayer())
+            .map(|prayer| (prayer, self.time(prayer)))
+            .find(|(_, time)| *time > now)
+    }
 }
 
 /// Compute one day of prayer times for a place and a configuration.
@@ -424,6 +433,26 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 11, 17, 8, 0, 0).unwrap();
         assert_eq!(t.current(now), Some(Prayer::Sunrise));
         assert_eq!(t.next(now), Some((Prayer::Dhuhr, t.dhuhr)));
+    }
+
+    #[test]
+    fn next_obligatory_skips_sunrise_and_qiyam() {
+        let t = compute(
+            date(),
+            Coordinates::new(24.7136, 46.6753),
+            &PrayerConfig::default(),
+        );
+        // 2026-11-17 13:20 UTC == 16:20 in Riyadh: after Asr, before Maghrib.
+        let now = Utc.with_ymd_and_hms(2026, 11, 17, 13, 20, 0).unwrap();
+        assert_eq!(t.next(now).map(|(p, _)| p), Some(Prayer::Maghrib));
+        assert_eq!(
+            t.next_obligatory(now).map(|(p, _)| p),
+            Some(Prayer::Maghrib)
+        );
+
+        // 2026-11-17 15:10 UTC == 18:10 in Riyadh: after Maghrib, before Isha.
+        let now = Utc.with_ymd_and_hms(2026, 11, 17, 15, 10, 0).unwrap();
+        assert_eq!(t.next_obligatory(now).map(|(p, _)| p), Some(Prayer::Isha));
     }
 
     #[test]

@@ -1,26 +1,182 @@
-// Tawadu — main window.
-// Skeleton only: the real screens (home / settings / athkar / voice packs) are
-// built from the design tokens in design/brand.md in Phase 1.
+// Tawadu — home surface (Monitor): the countdown leads, the day list and athkar
+// sit around it. Layout follows design/style-guide.html.
+
+import { Palette } from "palette.slint";
+import { Row } from "types.slint";
 
 export component MainWindow inherits Window {
     title: "Tawadu";
-    width: 960px;
-    height: 600px;
-    background: #F6F1E8;
+    width: 980px;
+    height: 620px;
+    background: Palette.bg;
+
+    in property <string> location_name;
+    in property <string> location_name_ar;
+    in property <string> hijri_date;
+    in property <string> next_name;
+    in property <string> next_name_ar;
+    in property <string> countdown;
+    in property <string> next_iqamah;
+    in property <string> athkar_text;
+    in property <string> athkar_progress;
+    in property <[Row]> rows;
 
     VerticalLayout {
         padding: 24px;
-        spacing: 12px;
+        spacing: 20px;
 
-        Text {
-            text: "Tawadu · تواضع";
-            font-size: 28px;
+        // ---- header ----
+        HorizontalLayout {
+            spacing: 12px;
+            VerticalLayout {
+                Text {
+                    text: "Tawadu · تواضع";
+                    font-size: 22px;
+                    font-weight: 600;
+                    color: Palette.ink;
+                }
+                Text {
+                    text: location_name + " · " + location_name_ar;
+                    font-size: 13px;
+                    color: Palette.ink-muted;
+                }
+            }
         }
 
-        Text {
-            text: "Skeleton — prayer times arrive in Phase 0.";
-            font-size: 15px;
-            color: #6E665A;
+        // ---- body ----
+        HorizontalLayout {
+            spacing: 24px;
+
+            // left: the countdown leads
+            VerticalLayout {
+                spacing: 16px;
+                width: 420px;
+
+                Rectangle {
+                    background: Palette.surface;
+                    border-color: Palette.border;
+                    border-width: 1px;
+                    border-radius: Palette.radius;
+                    VerticalLayout {
+                        padding: 20px;
+                        spacing: 4px;
+                        Text {
+                            text: "NEXT PRAYER";
+                            font-size: 11px;
+                            letter-spacing: 1px;
+                            color: Palette.accent;
+                        }
+                        Text {
+                            text: next_name;
+                            font-size: 26px;
+                            font-weight: 600;
+                            color: Palette.ink;
+                        }
+                        Text {
+                            text: next_name_ar;
+                            font-size: 20px;
+                            color: Palette.accent;
+                        }
+                        Text {
+                            text: countdown;
+                            font-size: 54px;
+                            font-weight: 400;
+                            color: Palette.ink;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                Rectangle {
+                    background: Palette.surface;
+                    border-color: Palette.border;
+                    border-width: 1px;
+                    border-radius: Palette.radius-small;
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 2px;
+                        Text {
+                            text: "NEXT IQAMAH";
+                            font-size: 11px;
+                            letter-spacing: 1px;
+                            color: Palette.ink-muted;
+                        }
+                        Text {
+                            text: next_iqamah;
+                            font-size: 16px;
+                            font-weight: 600;
+                            color: Palette.ink;
+                        }
+                    }
+                }
+
+                Rectangle {
+                    background: Palette.surface;
+                    border-color: Palette.border;
+                    border-width: 1px;
+                    border-radius: Palette.radius;
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 8px;
+                        Text {
+                            text: "MORNING ATHKAR";
+                            font-size: 11px;
+                            letter-spacing: 1px;
+                            color: Palette.ink-muted;
+                        }
+                        Text {
+                            text: athkar_text;
+                            font-size: 18px;
+                            color: Palette.ink;
+                            horizontal-alignment: end;
+                        }
+                        Text {
+                            text: athkar_progress;
+                            font-size: 12px;
+                            color: Palette.accent;
+                        }
+                    }
+                }
+            }
+
+            // right: today's list
+            Rectangle {
+                background: Palette.surface-secondary;
+                border-radius: Palette.radius;
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 8px;
+                    Text {
+                        text: "Today";
+                        font-size: 11px;
+                        letter-spacing: 1px;
+                        color: Palette.ink-muted;
+                    }
+                    for row in rows: Rectangle {
+                        background: row.is_next ? Palette.accent-soft : Palette.surface;
+                        border-color: row.is_next ? Palette.accent : Palette.border;
+                        border-width: 1px;
+                        border-radius: Palette.radius-small;
+                        HorizontalLayout {
+                            padding: 10px;
+                            spacing: 8px;
+                            Text {
+                                text: row.name;
+                                font-size: 15px;
+                                font-weight: row.is_prayer ? 600 : 400;
+                                color: row.is_prayer ? Palette.ink : Palette.ink-muted;
+                            }
+                            Rectangle { }
+                            Text {
+                                text: row.time;
+                                font-size: 15px;
+                                font-weight: 500;
+                                color: Palette.ink;
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
