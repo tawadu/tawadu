@@ -300,6 +300,33 @@ export component MainWindow inherits Window {
         padding: 24px;
         spacing: 18px;
 
+        // In-app notification banner, in flow: it pushes the header and page
+        // down instead of overlapping them. The `if` removes it entirely when
+        // hidden, so it occupies zero space (including its layout spacing).
+        // The explicit height keeps it compact; the width follows the layout.
+        if (banner_visible) : Rectangle {
+            height: 76px;
+            background: Palette.surface;
+            border-color: Palette.border;
+            border-width: 1px;
+            border-radius: Palette.radius;
+            VerticalLayout {
+                padding: 12px;
+                spacing: 4px;
+                Text {
+                    text: banner_title;
+                    font-size: 14px;
+                    font-weight: 600;
+                    color: Palette.ink;
+                }
+                Text {
+                    text: banner_body;
+                    font-size: 12px;
+                    color: Palette.ink-muted;
+                }
+            }
+        }
+
         // ---- header ----
         HorizontalLayout {
             spacing: 12px;
@@ -323,7 +350,12 @@ export component MainWindow inherits Window {
                         color: Palette.ink-muted;
                     }
                     RowText {
-                        text: hijri_date;
+                        // RLM (U+200F) forces an RTL base direction so the
+                        // mixed digit/Arabic date reads [هـ][1448][month][9].
+                        // Slint 1.19 Text has no direction property; the
+                        // shared-parley layout honours the RLM mark. Keep the
+                        // empty case truly empty.
+                        text: hijri_date == "" ? "" : "\u{200F}" + hijri_date;
                         font-size: 13px;
                         color: Palette.ink-muted;
                     }
@@ -774,36 +806,6 @@ export component MainWindow inherits Window {
                 }
             }
             }
-            }
-        }
-    }
-
-    // In-app notification. Slint's window children stack, so this sits over the
-    // page rather than pushing it down.
-    if (banner_visible) : Rectangle {
-        x: 24px;
-        y: 24px;
-        width: 360px;
-        // Without an explicit height a Rectangle outside a layout fills its parent,
-        // which here would be a 360x620 slab over the left third of the window.
-        height: 76px;
-        background: Palette.surface;
-        border-color: Palette.border;
-        border-width: 1px;
-        border-radius: Palette.radius;
-        VerticalLayout {
-            padding: 12px;
-            spacing: 4px;
-            Text {
-                text: banner_title;
-                font-size: 14px;
-                font-weight: 600;
-                color: Palette.ink;
-            }
-            Text {
-                text: banner_body;
-                font-size: 12px;
-                color: Palette.ink-muted;
             }
         }
     }
