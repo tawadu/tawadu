@@ -12,7 +12,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveTime, Utc};
 use slint::{ModelRc, SharedString, Timer, TimerMode, VecModel};
 use tawadu_core::hijri::from_gregorian;
 use tawadu_core::locations::{find_city, Location, CITIES};
@@ -20,7 +20,7 @@ use tawadu_core::notify::{self, NotificationKind};
 use tawadu_core::prayer::{self, HighLatitudeRule, Madhab, Method, Prayer, PrayerTimes, Rounding};
 use tawadu_core::scheduler::{self, EventKind, IqamahOffsets, Timeline};
 use tawadu_core::settings::{Language, Settings, Theme};
-use tawadu_core::storage::Storage;
+use tawadu_core::storage::{LoadOutcome, Storage};
 
 slint::include_modules!();
 
@@ -336,6 +336,16 @@ fn apply_settings(ui: &MainWindow, state: &AppState) {
 
     ui.set_settings_location_name(location.name.clone().into());
     ui.set_settings_location_name_ar(location.name_ar.clone().into());
+
+    let n = &settings.notifications;
+    ui.set_notif_pre_alert(n.pre_alert);
+    ui.set_notif_athan(n.athan);
+    ui.set_notif_iqamah(n.iqamah);
+    ui.set_notif_athkar(n.athkar);
+    ui.set_notif_system(n.system);
+    ui.set_quiet_hours_enabled(n.quiet_hours_enabled);
+    ui.set_quiet_from(n.quiet_from.format("%H:%M").to_string().into());
+    ui.set_quiet_to(n.quiet_to.format("%H:%M").to_string().into());
     ui.set_location_query(location.name.clone().into());
     ui.set_city_results(ModelRc::new(VecModel::from(Vec::<CityRow>::new())));
 
@@ -630,6 +640,25 @@ fn spawn_scheduler(
         .expect("spawn the scheduler thread");
 }
 
+/// A second instance would run a second scheduler and notify twice, so only the
+/// GUI claims the name; the CLI stays free to run alongside it.
+///
+/// The handle is deliberately leaked: dropping it releases the lock, and a
+/// dropped lock is exactly the bug this is here to prevent.
+fn claim_single_instance() -> bool {
+    match single_instance::SingleInstance::new("tawadu-app") {
+        Ok(instance) => {
+            let single = instance.is_single();
+            Box::leak(Box::new(instance));
+            single
+        }
+        Err(error) => {
+            log::warn!("could not check for another instance ({error}); continuing");
+            true
+        }
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = <cli::Cli as clap::Parser>::parse();
 
@@ -641,14 +670,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    if !claim_single_instance() {
+        eprintln!("Tawadu is already running.");
+        return Ok(());
+    }
+
     env_logger::init();
     log::info!("Tawadu starting (core v{})", tawadu_core::VERSION);
 
     let storage = Storage::open_default();
-    let settings = storage
-        .as_ref()
-        .and_then(|s| s.load_settings().ok().flatten())
-        .unwrap_or_default();
+    let mut settings = Settings::default();
+    let mut warning: Option<String> = None;
+    if let Some(store) = storage.as_ref() {
+        match store.load_settings() {
+            LoadOutcome::Fresh => {}
+            LoadOutcome::Loaded(loaded) => settings = loaded,
+            // Never silent: a corrupt blob or a failed read falls back to
+            // defaults, but the user is told, because defaults are Riyadh and
+            // the app will otherwise announce the wrong times with confidence.
+            LoadOutcome::Corrupt(raw) => {
+                log::error!("settings blob unreadable, using defaults: {raw}");
+                warning = Some(
+                    "Your saved settings could not be read — using defaults. Press حفظ to reset."
+                        .to_string(),
+                );
+            }
+            LoadOutcome::Failed(message) => {
+                log::error!("could not read settings: {message}");
+                warning = Some(format!(
+                    "Could not read your saved settings ({message}). Using defaults — press حفظ to retry."
+                ));
+            }
+        }
+    }
 
     let state = Arc::new(Mutex::new(AppState {
         settings,
@@ -664,6 +718,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     apply_theme(&ui, state.lock().unwrap().settings.theme);
     apply_home(&ui, &state.lock().unwrap());
     apply_settings(&ui, &state.lock().unwrap());
+    if let Some(message) = &warning {
+        ui.set_status_message(message.clone().into());
+    }
 
     // ---- callbacks ----
     {
@@ -893,6 +950,54 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             ui.set_countdown(countdown(at).into());
         }
     });
+
+    // ---- notification switches ----
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_set_notif_kind(move |key: SharedString, on: bool| {
+            let mut state = state.lock().unwrap();
+            if let Some(kind) = decode::<NotificationKind>(&key) {
+                state.settings.notifications.set_enabled(kind, on);
+            }
+            if let Some(ui) = weak.upgrade() {
+                apply_settings(&ui, &state);
+                state.changed();
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_set_quiet_enabled(move |on: bool| {
+            let mut state = state.lock().unwrap();
+            state.settings.notifications.quiet_hours_enabled = on;
+            if let Some(ui) = weak.upgrade() {
+                apply_settings(&ui, &state);
+                state.changed();
+            }
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        ui.on_set_quiet_from(move |value: SharedString| {
+            if let Ok(time) = NaiveTime::parse_from_str(value.as_str(), "%H:%M") {
+                let mut state = state.lock().unwrap();
+                state.settings.notifications.quiet_from = time;
+                state.changed();
+            }
+        });
+    }
+    {
+        let state = Arc::clone(&state);
+        ui.on_set_quiet_to(move |value: SharedString| {
+            if let Ok(time) = NaiveTime::parse_from_str(value.as_str(), "%H:%M") {
+                let mut state = state.lock().unwrap();
+                state.settings.notifications.quiet_to = time;
+                state.changed();
+            }
+        });
+    }
 
     // ---- notification engine ----
     let (notice_tx, notice_rx) = mpsc::channel::<Notice>();

@@ -33,6 +33,7 @@ slint = "1"
 # --- desktop integration ---
 notify-rust = "4"
 # tray-icon, auto-launch, single-instance, rfd, global-hotkey
+single-instance = "0.3"
 # --- misc ---
 log = "0.4"
 env_logger = "0.11"

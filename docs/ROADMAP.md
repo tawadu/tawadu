@@ -22,8 +22,9 @@ it beautiful and widely available.
   card, today's list, live tick, persisted settings.
 - **CI** — fmt, clippy `-D warnings` and tests on ubuntu / windows / macOS.
 - **Brand** — logo, style guide, themes, banners (`design/`).
-- **58 tests** (55 core + 3 CLI), including a polar-day case, a far-east
-  UTC-anchoring case, and a sleep/wake sweep proving the athan is not dropped.
+- **63 tests** (60 core + 3 CLI), including a polar-day case, a far-east
+  UTC-anchoring case, a sleep/wake sweep proving the athan is not dropped, and
+  proof that a corrupt settings blob is *not* mistaken for a fresh install.
 
 **Known gaps (the honest list)**
 
@@ -36,7 +37,7 @@ it beautiful and widely available.
 | 5 | `tawadu-audio` is an empty skeleton | No athan, no athkar audio |
 | 6 | Strings are hardcoded in `.slint` | No real i18n; RTL unverified |
 | 7 | 28 cities, no search, no GPS | Most users cannot set their town |
-| 8 | Storage errors are swallowed with `.ok()` | A broken database looks like "no settings" |
+| ~~8~~ | ~~Storage errors swallowed with `.ok()`~~ | **Done** — `LoadOutcome` separates fresh / corrupt / failed, and the UI says so |
 | 9 | Performance budgets unmeasured | We cannot claim the numbers in the plan |
 | 10 | No packaging | Nothing to hand to a non-developer |
 
@@ -232,14 +233,16 @@ Do not start this before Phase 6 is done.
 
 Phase 2's engine is built and verified; **Phase 2 is not closed** — see gap #4.
 
-1. **Single-instance first.** Two instances means two schedulers and two overlapping
-   athans. It is a correctness prerequisite for everything built so far.
-2. **Tray + quit**, so closing the window does not kill the scheduler. Without it the
-   Phase 2 exit criterion ("closed to the tray") cannot be met.
-3. **Notification controls UI** — the five per-kind switches and quiet hours are
-   persisted and honoured but unreachable from the interface.
-4. **Surface storage errors** (gap #8): today a corrupt blob silently becomes
-   factory defaults, so the app would confidently announce the wrong city's times.
+1. ~~**Single-instance first.**~~ **Done** — a second launch exits at once, and the
+   CLI still runs alongside a live GUI. (The handle is deliberately leaked: dropping
+   it releases the lock.)
+2. ~~**Notification controls UI**~~ **Done** — five per-kind switches plus quiet hours
+   are on screen and reach `NotificationSettings`.
+3. ~~**Surface storage errors**~~ **Done** — see gap #8.
+4. **Tray — blocked.** Slint 1.19's public API has no window-close hook, so "close to
+   tray" cannot be built honestly without backend-specific code. An icon-only tray
+   without that would be a redundant quit button, so this is parked rather than faked.
+   The consequence stands: closing the window ends the scheduler.
 5. **Autostart** (opt-in, off by default).
 6. Only then Phase 3, audio. An athan with no tray and no mute is an app you cannot
    silence — the exact complaint this project exists to fix.

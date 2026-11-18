@@ -77,6 +77,48 @@ component Segmented inherits HorizontalLayout {
     }
 }
 
+// A labelled on/off row.
+component Toggle inherits Rectangle {
+    in property <string> label;
+    in property <bool> on;
+    callback toggled(bool);
+    height: 32px;
+    background: Palette.surface-secondary;
+    border-radius: Palette.radius-small;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        padding-top: 6px;
+        padding-bottom: 6px;
+        spacing: 8px;
+        Text {
+            text: label;
+            font-size: 13px;
+            color: Palette.ink;
+            height: 20px;
+            vertical-alignment: center;
+        }
+        Rectangle { }
+        Rectangle {
+            width: 36px;
+            height: 20px;
+            background: on ? Palette.accent : Palette.border;
+            border-radius: 10px;
+            Rectangle {
+                x: on ? 18px : 2px;
+                y: 2px;
+                width: 16px;
+                height: 16px;
+                background: Palette.accent-ink;
+                border-radius: 8px;
+            }
+        }
+    }
+    TouchArea {
+        clicked => { toggled(!on); }
+    }
+}
+
 // A labelled − value + stepper.
 component Stepper inherits HorizontalLayout {
     in property <string> label;
@@ -220,6 +262,16 @@ export component MainWindow inherits Window {
     in property <int> iqamah_isha;
     in property <string> status_message;
 
+    // ---- notifications ----
+    in property <bool> notif_pre_alert;
+    in property <bool> notif_athan;
+    in property <bool> notif_iqamah;
+    in property <bool> notif_athkar;
+    in property <bool> notif_system;
+    in property <bool> quiet_hours_enabled;
+    in property <string> quiet_from;
+    in property <string> quiet_to;
+
     // ---- in-app notification ----
     in property <string> banner_title;
     in property <string> banner_body;
@@ -238,6 +290,10 @@ export component MainWindow inherits Window {
     callback set-language(string);
     callback set-pre-alert(int);
     callback set-iqamah(string, int);
+    callback set-notif-kind(string, bool);
+    callback set-quiet-enabled(bool);
+    callback set-quiet-from(string);
+    callback set-quiet-to(string);
     callback save-settings();
 
     VerticalLayout {
@@ -410,13 +466,21 @@ export component MainWindow inherits Window {
         }
 
         // ---- settings ----
-        if (page == "settings") : HorizontalLayout {
+        // The settings page outgrew the window once notifications were added, so it
+        // scrolls rather than clipping the lower cards.
+        if (page == "settings") : Flickable {
+            VerticalLayout {
+            settings-columns := HorizontalLayout {
             spacing: 20px;
 
             // left column
             VerticalLayout {
                 spacing: 14px;
                 width: 460px;
+                // Without this the cards stretch to fill whatever height the
+                // taller right column imposes, which pushes the ALERTS steppers
+                // out of view. `start` keeps each card at its own height.
+                alignment: start;
 
                 Rectangle {
                     background: Palette.surface;
@@ -528,6 +592,7 @@ export component MainWindow inherits Window {
             VerticalLayout {
                 spacing: 14px;
                 width: 420px;
+                alignment: start;
 
                 Rectangle {
                     background: Palette.surface;
@@ -630,6 +695,64 @@ export component MainWindow inherits Window {
                     }
                 }
 
+                Rectangle {
+                    background: Palette.surface;
+                    border-color: Palette.border;
+                    border-width: 1px;
+                    border-radius: Palette.radius;
+                    Section { title: "NOTIFICATIONS";
+                        Toggle {
+                            label: "Pre-alert";
+                            on: notif_pre_alert;
+                            toggled(on) => { set-notif-kind("pre_alert", on); }
+                        }
+                        Toggle {
+                            label: "Athan";
+                            on: notif_athan;
+                            toggled(on) => { set-notif-kind("athan", on); }
+                        }
+                        Toggle {
+                            label: "Iqamah";
+                            on: notif_iqamah;
+                            toggled(on) => { set-notif-kind("iqamah", on); }
+                        }
+                        Toggle {
+                            label: "Athkar";
+                            on: notif_athkar;
+                            toggled(on) => { set-notif-kind("athkar", on); }
+                        }
+                        Toggle {
+                            label: "System";
+                            on: notif_system;
+                            toggled(on) => { set-notif-kind("system", on); }
+                        }
+                        Toggle {
+                            label: "Quiet hours";
+                            on: quiet_hours_enabled;
+                            toggled(on) => { set-quiet-enabled(on); }
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            TextInput {
+                                width: 70px;
+                                height: 28px;
+                                text: quiet_from;
+                                font-size: 13px;
+                                color: Palette.ink;
+                                edited => { set-quiet-from(self.text); }
+                            }
+                            TextInput {
+                                width: 70px;
+                                height: 28px;
+                                text: quiet_to;
+                                font-size: 13px;
+                                color: Palette.ink;
+                                edited => { set-quiet-to(self.text); }
+                            }
+                        }
+                    }
+                }
+
                 Text {
                     text: status_message;
                     font-size: 12px;
@@ -649,6 +772,8 @@ export component MainWindow inherits Window {
                         triggered => { close-settings(); }
                     }
                 }
+            }
+            }
             }
         }
     }
