@@ -193,11 +193,12 @@ fires the athan and iqamah while correctly dropping the stale pre-alert.
 
 ### Blocking / user-visible
 
-1. **Closing the window ends the scheduler.** The tray is **blocked**: Slint 1.19's
-   public API has no window-close hook (verified by grepping the crate — no
-   `on_close`, no `CloseRequested`). "Close to tray" needs backend-specific code, and
-   an icon-only tray without it is a redundant quit button, so it was parked rather
-   than faked. **This blocks Phase 2's exit criterion and therefore audio.**
+1. **Closing the window ends the scheduler.** ~~The tray is **blocked**~~
+   **RESOLVED 2026-11-19:** the "no close hook" claim was a false negative —
+   Slint 1.19 has a public `Window::on_close_requested`; the loop quits only
+   because `hide()` drops the last keepalive. Unanimous panel chose option (c):
+   close hook + `KeepAlive` + `tray-icon`/`muda`. See
+   [`docs/adr/0002-tray-close-to-tray.md`](docs/adr/0002-tray-close-to-tray.md).
 2. **No audio at all.** `tawadu-audio` is a 10-line skeleton. No athan, no athkar.
    This is the feature the user originally asked for.
 3. **The athkar card is hardcoded** — it shows one static dhikr. (The fabricated
@@ -248,6 +249,12 @@ Ordered by user value per unit of risk. Each ends with the same green gate:
 desktop.
 
 ### Step 1 — Decide the tray question (small, unblocks everything)
+
+> **DECIDED 2026-11-19 — option (c), unanimous panel.** Neither (a) nor (b) below
+> is needed: Slint 1.19's public `on_close_requested` + a held `KeepAlive` +
+> `tray-icon`/`muda`. Binding conditions and evidence:
+> [`docs/adr/0002-tray-close-to-tray.md`](docs/adr/0002-tray-close-to-tray.md).
+> The original options are kept for the record:
 
 Either:
 - **(a)** add a backend-specific close hook (winit/`windows` crate) so closing hides

@@ -33,7 +33,7 @@ it beautiful and widely available.
 | ~~1~~ | ~~No settings screen~~ | **Done** — settings surface + SQLite write path, verified end to end |
 | 2 | Athkar card is hardcoded | It is a mock, not a feature |
 | 3 | Iqamah offsets default to `0` | No iqamah events are ever scheduled |
-| 4 | Engine landed; tray, single-instance, autostart and notification controls pending | It alerts only while the window is open, and nothing can be silenced from the UI |
+| 4 | Tray decided (ADR 0002), implementing; autostart pending | Alerts still end when the window closes — until Step 1 lands |
 | 5 | `tawadu-audio` is an empty skeleton | No athan, no athkar audio |
 | 6 | Strings are hardcoded in `.slint` | No real i18n; RTL unverified |
 | 7 | 28 cities, no search, no GPS | Most users cannot set their town |
@@ -239,10 +239,14 @@ Phase 2's engine is built and verified; **Phase 2 is not closed** — see gap #4
 2. ~~**Notification controls UI**~~ **Done** — five per-kind switches plus quiet hours
    are on screen and reach `NotificationSettings`.
 3. ~~**Surface storage errors**~~ **Done** — see gap #8.
-4. **Tray — blocked.** Slint 1.19's public API has no window-close hook, so "close to
-   tray" cannot be built honestly without backend-specific code. An icon-only tray
-   without that would be a redundant quit button, so this is parked rather than faked.
-   The consequence stands: closing the window ends the scheduler.
+4. **Tray — decided, implementing.** The "no close hook" premise was a false
+   negative (the previous team grepped only the `slint` facade crate). Slint 1.19
+   exposes `Window::on_close_requested` publicly; the missing piece is a
+   `KeepAlive` so hiding the last window does not quit the loop. Unanimous panel
+   (Forge/Sentinel/Prism, 2026-11-19) chose option (c): public close hook +
+   KeepAlive + `tray-icon`/`muda`. See [`adr/0002-tray-close-to-tray.md`](adr/0002-tray-close-to-tray.md)
+   for evidence and the binding conditions (banner floor while hidden, AUMID,
+   Linux fallback, component lifetime).
 5. **Autostart** (opt-in, off by default).
 6. Only then Phase 3, audio. An athan with no tray and no mute is an app you cannot
    silence — the exact complaint this project exists to fix.
