@@ -75,6 +75,8 @@ fn signal_on(name: &str) -> bool {
 fn socket_addr(name: &str) -> std::io::Result<std::os::unix::net::SocketAddr> {
     #[cfg(target_os = "linux")]
     {
+        // from_abstract_name lives on the SocketAddrExt trait, not SocketAddr.
+        use std::os::linux::net::SocketAddrExt;
         std::os::unix::net::SocketAddr::from_abstract_name(format!("tawadu-restore-{name}"))
     }
     #[cfg(target_os = "macos")]

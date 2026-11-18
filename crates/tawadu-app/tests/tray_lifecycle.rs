@@ -11,6 +11,9 @@
 //! `KeepWindowShown` (ADR condition 4) — the test asserts tray-or-fallback
 //! from the app's own log, never assumes which path ran.
 //!
+//! All waits are marker-driven with generous deadlines, not fixed sleeps:
+//! slow runners (macOS CI) can take seconds just to reach the first timer.
+//!
 //! NOTE: the single-instance lock is global. If a Tawadu instance is already
 //! running on this machine, kill it first (`taskkill /F /IM tawadu-app.exe`).
 
@@ -67,6 +70,20 @@ fn wait_exit(child: &mut Child, timeout: Duration) -> Option<std::process::ExitS
     }
 }
 
+/// Poll the app's log until `needle` appears (or the deadline passes).
+fn wait_for_log(log: &Arc<Mutex<String>>, needle: &str, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if log.lock().unwrap().contains(needle) {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 #[cfg(windows)]
 fn window_visible() -> bool {
     use windows::core::w;
@@ -75,6 +92,20 @@ fn window_visible() -> bool {
         FindWindowW(None, w!("Tawadu"))
             .map(|hwnd| IsWindowVisible(hwnd).as_bool())
             .unwrap_or(false)
+    }
+}
+
+#[cfg(windows)]
+fn wait_for_visibility(visible: bool, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if window_visible() == visible {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -88,26 +119,31 @@ fn tray_lifecycle() {
         ("TAWADU_DEBUG_AUTOQUIT_MS", "5000"),
     ]);
 
-    // Past the 1.5 s auto-close: without the held KeepAlive the loop would
-    // have quit when hide() dropped the window's last keepalive.
-    std::thread::sleep(Duration::from_secs(3));
+    // Wait for the close to actually happen (slow runners start late).
+    let closed = wait_for_log(&log, "hidden to tray", Duration::from_secs(30));
+    let fallback = if closed {
+        false
+    } else {
+        wait_for_log(&log, "tray unavailable", Duration::from_secs(5))
+    };
+    assert!(
+        closed || fallback,
+        "neither tray path ran; logs:\n{}",
+        log.lock().unwrap()
+    );
+
+    // The close has fired; without the held KeepAlive the loop would have
+    // quit when hide() dropped the window's last keepalive. Quit is 3.5 s
+    // behind the close, so there is margin to observe the alive state.
     assert!(
         app.try_wait().expect("try_wait").is_none(),
         "process exited after close — KeepAlive is not holding the event loop"
     );
-
-    let logs = log.lock().unwrap().clone();
-    let hidden_to_tray = logs.contains("hidden to tray");
-    let tray_fallback = logs.contains("tray unavailable");
-    assert!(
-        hidden_to_tray || tray_fallback,
-        "neither tray path ran; logs:\n{logs}"
-    );
     #[cfg(windows)]
     {
-        if hidden_to_tray {
+        if closed {
             assert!(
-                !window_visible(),
+                wait_for_visibility(false, Duration::from_secs(5)),
                 "window must be hidden after close-to-tray"
             );
         } else {
@@ -115,59 +151,52 @@ fn tray_lifecycle() {
         }
     }
 
-    let status = wait_exit(&mut app, Duration::from_secs(10))
+    let status = wait_exit(&mut app, Duration::from_secs(30))
         .expect("Quit must exit the process (quit_event_loop is not keepalive-gated)");
     assert!(status.success(), "Quit must exit cleanly, got {status:?}");
 
     // ---- phase 2: second launch while hidden restores the window ----
     let (mut first, log) = spawn_app(&[("TAWADU_DEBUG_AUTOCLOSE_MS", "1500")]);
-    std::thread::sleep(Duration::from_millis(2500));
+    let first_hidden = wait_for_log(&log, "hidden to tray", Duration::from_secs(30));
     assert!(
         first.try_wait().expect("try_wait").is_none(),
         "first instance died"
     );
-    let first_logs = log.lock().unwrap().clone();
-    let first_hidden = first_logs.contains("hidden to tray");
     #[cfg(windows)]
     if first_hidden {
         assert!(
-            !window_visible(),
+            wait_for_visibility(false, Duration::from_secs(5)),
             "first instance should be hidden before relaunch"
         );
     }
 
     let (mut second, _second_log) = spawn_app(&[]);
-    let second_status = wait_exit(&mut second, Duration::from_secs(5))
+    let second_status = wait_exit(&mut second, Duration::from_secs(15))
         .expect("second launch must exit promptly (single instance)");
     assert!(
         second_status.success(),
         "second launch must exit 0, got {second_status:?}"
     );
 
-    // Give the restore signal time to cross the event loop.
-    std::thread::sleep(Duration::from_secs(1));
     assert!(
         first.try_wait().expect("try_wait").is_none(),
         "first instance must keep running after a second launch"
     );
-    #[cfg(windows)]
     if first_hidden {
         assert!(
-            window_visible(),
-            "second launch must restore/show the hidden window (ADR condition 5)"
+            wait_for_log(
+                &log,
+                "restored window (second launch)",
+                Duration::from_secs(15)
+            ),
+            "second launch must restore the hidden window (ADR condition 5); logs:\n{}",
+            log.lock().unwrap()
         );
-    }
-    #[cfg(not(windows))]
-    {
-        // Visibility is not assertable headlessly here; the restore callback
-        // path is logged, so assert it ran when the tray path was taken.
-        if first_hidden {
-            let logs = log.lock().unwrap().clone();
-            assert!(
-                logs.contains("restored window (second launch)"),
-                "restore callback did not run; logs:\n{logs}"
-            );
-        }
+        #[cfg(windows)]
+        assert!(
+            wait_for_visibility(true, Duration::from_secs(5)),
+            "restored window must actually be visible"
+        );
     }
 
     let _ = first.kill();
