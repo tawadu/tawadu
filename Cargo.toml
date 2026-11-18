@@ -13,7 +13,9 @@ readme = "README.md"
 
 [workspace.dependencies]
 # --- time & prayer math ---
-jiff = "0.2"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+hijridate = "0.1"
 salah = "0.7"
 # --- storage ---
 rusqlite = { version = "0.32", features = ["bundled"] }

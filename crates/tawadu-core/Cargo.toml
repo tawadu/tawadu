@@ -6,7 +6,9 @@ license.workspace = true
 readme.workspace = true
 
 [dependencies]
-jiff.workspace = true
+chrono.workspace = true
+chrono-tz.workspace = true
+hijridate.workspace = true
 salah.workspace = true
 serde.workspace = true
 serde_json.workspace = true

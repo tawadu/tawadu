@@ -30,6 +30,11 @@ design/                brand & visual style (tokens are the source of truth)
 - **Persistence** — SQLite for settings, history, athkar progress, pack metadata
   and mosque profiles; JSON export for portability.
 
+## Known limitations
+
+- **High-latitude rule and rounding are not configurable yet.** The `salah` crate keeps those types in a private module, so Tawadu uses its defaults (middle-of-the-night, nearest minute). The `adhan` crate exposes them and is the likely switch if that becomes important.
+- The city database is a small bundled list; the full GeoNames set is a later addition.
+
 ## Correctness rules (non-negotiable)
 
 1. Astronomy is computed in **UTC**; local offsets are added only at the edge.

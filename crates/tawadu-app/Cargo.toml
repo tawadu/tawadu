@@ -8,6 +8,8 @@ build = "build.rs"
 [dependencies]
 tawadu-core = { path = "../tawadu-core" }
 tawadu-audio = { path = "../tawadu-audio" }
+chrono.workspace = true
+chrono-tz.workspace = true
 slint.workspace = true
 log.workspace = true
 env_logger.workspace = true
