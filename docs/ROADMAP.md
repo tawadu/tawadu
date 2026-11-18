@@ -239,7 +239,7 @@ Phase 2's engine is built and verified; **Phase 2 is not closed** — see gap #4
 2. ~~**Notification controls UI**~~ **Done** — five per-kind switches plus quiet hours
    are on screen and reach `NotificationSettings`.
 3. ~~**Surface storage errors**~~ **Done** — see gap #8.
-4. **Tray — decided, implementing.** The "no close hook" premise was a false
+4. **Tray — implemented, pending exit test.** The "no close hook" premise was a false
    negative (the previous team grepped only the `slint` facade crate). Slint 1.19
    exposes `Window::on_close_requested` publicly; the missing piece is a
    `KeepAlive` so hiding the last window does not quit the loop. Unanimous panel

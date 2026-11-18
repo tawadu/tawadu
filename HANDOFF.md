@@ -93,7 +93,7 @@ docs/              ROADMAP.md (plan of record), architecture.md, adr/, voice-pac
 - **Branch:** `main`. **HEAD at handoff:** `d8d8b1e`
 - **Git identity is repo-local:** `XGradien <173515018+XGradien@users.noreply.github.com>`
 - **Working tree is clean.**
-- **Tests:** 63 (60 core + 3 CLI), `fmt` + `clippy -D warnings` clean, CI green on all 3 OSes.
+- **Tests:** 75 (60 core + 14 app unit + 1 process-level tray lifecycle), `fmt` + `clippy -D warnings` clean, CI green on all 3 OSes.
 
 ### Build and verify
 
@@ -121,6 +121,8 @@ The app reads three env vars, all off by default:
 | `TAWADU_DEBUG_NOW` | RFC 3339 base instant; advances in real time from process start |
 | `TAWADU_DEBUG_TIME_SCALE` | multiplies elapsed real time (e.g. `12` = 60 s behaves as 12 min) |
 | `TAWADU_DEBUG_BANNER_MS` | overrides the 8 s banner auto-hide |
+| `TAWADU_DEBUG_AUTOCLOSE_MS` | dispatches a real `CloseRequested` after N ms (tray regression test) |
+| `TAWADU_DEBUG_AUTOQUIT_MS` | calls `quit_event_loop()` after N ms (tray regression test) |
 
 This is how the sleep/wake path was proven without putting the machine to sleep:
 launch 1 minute before the Fajr pre-alert with scale `12`, wait ~65 s, and the sweep
@@ -199,6 +201,9 @@ fires the athan and iqamah while correctly dropping the stale pre-alert.
    because `hide()` drops the last keepalive. Unanimous panel chose option (c):
    close hook + `KeepAlive` + `tray-icon`/`muda`. See
    [`docs/adr/0002-tray-close-to-tray.md`](docs/adr/0002-tray-close-to-tray.md).
+   **IMPLEMENTED** on `feat/tray-close-to-tray` (tray, banner floor, AUMID,
+   Linux SNI fallback, macOS Cmd+Q, second-launch restore; process-level
+   regression test). Pending: desktop exit test + merge.
 2. **No audio at all.** `tawadu-audio` is a 10-line skeleton. No athan, no athkar.
    This is the feature the user originally asked for.
 3. **The athkar card is hardcoded** — it shows one static dhikr. (The fabricated
@@ -353,11 +358,11 @@ Phase 7 (mobile, only after Phase 6).
 |---|---|
 | Repo | https://github.com/tawadu/tawadu |
 | Plan of record | `docs/ROADMAP.md` |
-| Tests | 63 (60 core + 3 CLI) |
+| Tests | 75 (60 core + 14 app unit + 1 tray lifecycle) |
 | Settings DB | `%APPDATA%\tawadu\tawadu.db` (Windows) |
 | Default settings | Riyadh · Umm al-Qura · pre-alert 10 · all notifications on · quiet hours 22:00–06:00 (off) |
 | Verified timings 2026-11-17 | Riyadh: Fajr 04:49 · Sunrise 06:11 · Dhuhr 11:38 · Asr 14:44 · Maghrib 17:06 · Isha 18:36 (UTC+3) |
-| Debug clock | `TAWADU_DEBUG_NOW`, `TAWADU_DEBUG_TIME_SCALE`, `TAWADU_DEBUG_BANNER_MS` |
+| Debug clock | `TAWADU_DEBUG_NOW`, `TAWADU_DEBUG_TIME_SCALE`, `TAWADU_DEBUG_BANNER_MS`, `TAWADU_DEBUG_AUTOCLOSE_MS`, `TAWADU_DEBUG_AUTOQUIT_MS` |
 
 **First thing to do:** read `docs/ROADMAP.md` end to end, run the green gate, launch
 the app, and confirm the home screen shows Riyadh with a live countdown. Then Step 1.
