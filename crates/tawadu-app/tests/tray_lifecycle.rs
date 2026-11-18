@@ -84,6 +84,34 @@ fn wait_for_log(log: &Arc<Mutex<String>>, needle: &str, timeout: Duration) -> bo
     }
 }
 
+/// Poll for whichever of two markers appears first; returns its index.
+/// The tray path logs at close time, the fallback path at STARTUP — waiting
+/// for the tray marker alone would burn the whole deadline on the fallback
+/// path, past the auto-quit, and misread a clean exit as a keepalive failure.
+fn wait_for_either(
+    log: &Arc<Mutex<String>>,
+    first: &str,
+    second: &str,
+    timeout: Duration,
+) -> Option<usize> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        {
+            let logs = log.lock().unwrap();
+            if logs.contains(first) {
+                return Some(0);
+            }
+            if logs.contains(second) {
+                return Some(1);
+            }
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 #[cfg(windows)]
 fn window_visible() -> bool {
     use windows::core::w;
@@ -119,15 +147,17 @@ fn tray_lifecycle() {
         ("TAWADU_DEBUG_AUTOQUIT_MS", "5000"),
     ]);
 
-    // Wait for the close to actually happen (slow runners start late).
-    let closed = wait_for_log(&log, "hidden to tray", Duration::from_secs(30));
-    let fallback = if closed {
-        false
-    } else {
-        wait_for_log(&log, "tray unavailable", Duration::from_secs(5))
-    };
+    // Wait for whichever path ran (slow runners start late; the fallback
+    // path logs at startup, the tray path at close time).
+    let path = wait_for_either(
+        &log,
+        "hidden to tray",
+        "tray unavailable",
+        Duration::from_secs(30),
+    );
+    let closed = path == Some(0);
     assert!(
-        closed || fallback,
+        path.is_some(),
         "neither tray path ran; logs:\n{}",
         log.lock().unwrap()
     );
@@ -157,7 +187,12 @@ fn tray_lifecycle() {
 
     // ---- phase 2: second launch while hidden restores the window ----
     let (mut first, log) = spawn_app(&[("TAWADU_DEBUG_AUTOCLOSE_MS", "1500")]);
-    let first_hidden = wait_for_log(&log, "hidden to tray", Duration::from_secs(30));
+    let first_hidden = wait_for_either(
+        &log,
+        "hidden to tray",
+        "tray unavailable",
+        Duration::from_secs(30),
+    ) == Some(0);
     assert!(
         first.try_wait().expect("try_wait").is_none(),
         "first instance died"
