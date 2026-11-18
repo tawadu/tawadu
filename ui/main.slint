@@ -1,8 +1,145 @@
-// Tawadu — home surface (Monitor): the countdown leads, the day list and athkar
-// sit around it. Layout follows design/style-guide.html.
+// Tawadu — the window: a home surface and a settings surface.
+//
+// Rust owns all state. The interface reports edits back through the callbacks at
+// the bottom of MainWindow; nothing here persists anything by itself.
 
 import { Palette } from "palette.slint";
-import { Row } from "types.slint";
+import { CityRow, MethodRow, OptionRow, Row } from "types.slint";
+
+// A card with a small caps heading.
+component Section inherits VerticalLayout {
+    in property <string> title;
+    padding: 12px;
+    spacing: 6px;
+    Text {
+        text: title;
+        font-size: 11px;
+        letter-spacing: 1px;
+        color: Palette.ink-muted;
+    }
+}
+
+// A labelled row of mutually exclusive pills.
+component Segmented inherits HorizontalLayout {
+    in property <string> label;
+    in property <[OptionRow]> options;
+    in property <string> selected;
+    callback picked(string);
+    spacing: 8px;
+    Text {
+        text: label;
+        font-size: 12px;
+        color: Palette.ink-muted;
+        width: 92px;
+        vertical-alignment: center;
+    }
+    for option in options : Rectangle {
+        height: 30px;
+        width: pill.preferred-width + 22px;
+        background: selected == option.value ? Palette.accent-soft : Palette.surface;
+        border-color: selected == option.value ? Palette.accent : Palette.border;
+        border-width: 1px;
+        border-radius: Palette.radius-small;
+        pill := Text {
+            text: option.label;
+            font-size: 12px;
+            color: selected == option.value ? Palette.accent : Palette.ink;
+            width: parent.width;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        TouchArea {
+            clicked => { picked(option.value); }
+        }
+    }
+}
+
+// A labelled − value + stepper.
+component Stepper inherits HorizontalLayout {
+    in property <string> label;
+    in property <int> value;
+    callback changed(int);
+    spacing: 8px;
+    Text {
+        text: label;
+        font-size: 13px;
+        color: Palette.ink;
+        width: 84px;
+        vertical-alignment: center;
+    }
+    Rectangle {
+        width: 28px;
+        height: 28px;
+        background: Palette.surface;
+        border-color: Palette.border;
+        border-width: 1px;
+        border-radius: Palette.radius-small;
+        Text {
+            text: "−";
+            font-size: 16px;
+            color: Palette.ink;
+            width: parent.width;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        TouchArea {
+            clicked => { changed(value - 1); }
+        }
+    }
+    Text {
+        text: value;
+        font-size: 15px;
+        font-weight: 600;
+        color: Palette.ink;
+        width: 46px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    Rectangle {
+        width: 28px;
+        height: 28px;
+        background: Palette.surface;
+        border-color: Palette.border;
+        border-width: 1px;
+        border-radius: Palette.radius-small;
+        Text {
+            text: "+";
+            font-size: 16px;
+            color: Palette.ink;
+            width: parent.width;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        TouchArea {
+            clicked => { changed(value + 1); }
+        }
+    }
+}
+
+// A button.
+component Action inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary;
+    callback triggered();
+    height: 36px;
+    width: label-text.preferred-width + 34px;
+    background: primary ? Palette.accent : Palette.surface;
+    border-color: primary ? Palette.accent : Palette.border;
+    border-width: 1px;
+    border-radius: Palette.radius-small;
+    label-text := Text {
+        text: label;
+        font-size: 14px;
+        font-weight: 600;
+        color: primary ? Palette.accent-ink : Palette.ink;
+        width: parent.width;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    TouchArea {
+        clicked => { triggered(); }
+    }
+}
 
 export component MainWindow inherits Window {
     title: "Tawadu";
@@ -10,6 +147,10 @@ export component MainWindow inherits Window {
     height: 620px;
     background: Palette.bg;
 
+    // ---- navigation ----
+    in-out property <string> page: "home";
+
+    // ---- home ----
     in property <string> location_name;
     in property <string> location_name_ar;
     in property <string> hijri_date;
@@ -21,9 +162,49 @@ export component MainWindow inherits Window {
     in property <string> athkar_progress;
     in property <[Row]> rows;
 
+    // ---- settings ----
+    in property <string> settings_location;
+    in-out property <string> location_query;
+    in property <[CityRow]> city_results;
+    in property <[MethodRow]> methods_left;
+    in property <[MethodRow]> methods_right;
+    in property <string> selected_method;
+    in property <[OptionRow]> madhab_options;
+    in property <string> selected_madhab;
+    in property <[OptionRow]> high_latitude_options;
+    in property <string> selected_high_latitude;
+    in property <[OptionRow]> rounding_options;
+    in property <string> selected_rounding;
+    in property <[OptionRow]> theme_options;
+    in property <string> selected_theme;
+    in property <[OptionRow]> language_options;
+    in property <string> selected_language;
+    in property <int> pre_alert_minutes;
+    in property <int> iqamah_fajr;
+    in property <int> iqamah_dhuhr;
+    in property <int> iqamah_asr;
+    in property <int> iqamah_maghrib;
+    in property <int> iqamah_isha;
+    in property <string> status_message;
+
+    // ---- callbacks ----
+    callback open-settings();
+    callback close-settings();
+    callback search-city(string);
+    callback select-city(string);
+    callback set-method(string);
+    callback set-madhab(string);
+    callback set-high-latitude(string);
+    callback set-rounding(string);
+    callback set-theme(string);
+    callback set-language(string);
+    callback set-pre-alert(int);
+    callback set-iqamah(string, int);
+    callback save-settings();
+
     VerticalLayout {
         padding: 24px;
-        spacing: 20px;
+        spacing: 18px;
 
         // ---- header ----
         HorizontalLayout {
@@ -36,18 +217,23 @@ export component MainWindow inherits Window {
                     color: Palette.ink;
                 }
                 Text {
-                    text: location_name + " · " + location_name_ar;
+                    text: location_name + " · " + location_name_ar + "   ·   " + hijri_date;
                     font-size: 13px;
                     color: Palette.ink-muted;
                 }
             }
+            Rectangle { }
+            Action {
+                label: "الإعدادات";
+                primary: false;
+                triggered => { open-settings(); }
+            }
         }
 
-        // ---- body ----
-        HorizontalLayout {
+        // ---- home ----
+        if (page == "home") : HorizontalLayout {
             spacing: 24px;
 
-            // left: the countdown leads
             VerticalLayout {
                 spacing: 16px;
                 width: 420px;
@@ -82,7 +268,6 @@ export component MainWindow inherits Window {
                             font-size: 54px;
                             font-weight: 400;
                             color: Palette.ink;
-                            vertical-alignment: center;
                         }
                     }
                 }
@@ -139,7 +324,6 @@ export component MainWindow inherits Window {
                 }
             }
 
-            // right: today's list
             Rectangle {
                 background: Palette.surface-secondary;
                 border-radius: Palette.radius;
@@ -152,7 +336,7 @@ export component MainWindow inherits Window {
                         letter-spacing: 1px;
                         color: Palette.ink-muted;
                     }
-                    for row in rows: Rectangle {
+                    for row in rows : Rectangle {
                         background: row.is_next ? Palette.accent-soft : Palette.surface;
                         border-color: row.is_next ? Palette.accent : Palette.border;
                         border-width: 1px;
@@ -174,6 +358,214 @@ export component MainWindow inherits Window {
                                 color: Palette.ink;
                             }
                         }
+                    }
+                }
+            }
+        }
+
+        // ---- settings ----
+        if (page == "settings") : HorizontalLayout {
+            spacing: 20px;
+
+            // left column
+            VerticalLayout {
+                spacing: 14px;
+                width: 460px;
+
+                Rectangle {
+                    background: Palette.surface;
+                    border-color: Palette.border;
+                    border-width: 1px;
+                    border-radius: Palette.radius;
+                    Section { title: "LOCATION";
+                        Text {
+                            text: settings_location;
+                            font-size: 16px;
+                            font-weight: 600;
+                            color: Palette.accent;
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            TextInput {
+                                width: 240px;
+                                height: 30px;
+                                text: location_query;
+                                font-size: 13px;
+                                color: Palette.ink;
+                            }
+                            Action {
+                                label: "بحث";
+                                primary: true;
+                                triggered => { search-city(location_query); }
+                            }
+                        }
+                        for city in city_results : Rectangle {
+                            height: 28px;
+                            background: Palette.surface-secondary;
+                            border-radius: Palette.radius-small;
+                            Text {
+                                text: city.name + " · " + city.name_ar + "   " + city.country;
+                                font-size: 12px;
+                                color: Palette.ink;
+                                width: parent.width;
+                                vertical-alignment: center;
+                            }
+                            TouchArea {
+                                clicked => { select-city(city.name); }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    background: Palette.surface;
+                    border-color: Palette.border;
+                    border-width: 1px;
+                    border-radius: Palette.radius;
+                    Section { title: "ALERTS";
+                        Stepper {
+                            label: "Pre-alert";
+                            value: pre_alert_minutes;
+                            changed(next) => { set-pre-alert(next); }
+                        }
+                        Stepper {
+                            label: "Fajr";
+                            value: iqamah_fajr;
+                            changed(next) => { set-iqamah("fajr", next); }
+                        }
+                        Stepper {
+                            label: "Dhuhr";
+                            value: iqamah_dhuhr;
+                            changed(next) => { set-iqamah("dhuhr", next); }
+                        }
+                        Stepper {
+                            label: "Asr";
+                            value: iqamah_asr;
+                            changed(next) => { set-iqamah("asr", next); }
+                        }
+                        Stepper {
+                            label: "Maghrib";
+                            value: iqamah_maghrib;
+                            changed(next) => { set-iqamah("maghrib", next); }
+                        }
+                        Stepper {
+                            label: "Isha";
+                            value: iqamah_isha;
+                            changed(next) => { set-iqamah("isha", next); }
+                        }
+                    }
+                }
+            }
+
+            // right column
+            VerticalLayout {
+                spacing: 14px;
+                width: 420px;
+
+                Rectangle {
+                    background: Palette.surface;
+                    border-color: Palette.border;
+                    border-width: 1px;
+                    border-radius: Palette.radius;
+                    Section { title: "CALCULATION";
+                        HorizontalLayout {
+                            spacing: 8px;
+                            VerticalLayout {
+                                spacing: 2px;
+                                for method in methods_left : Rectangle {
+                                    height: 24px;
+                                    background: selected_method == method.key ? Palette.accent-soft : Palette.surface;
+                                    border-radius: Palette.radius-small;
+                                    Text {
+                                        text: method.label + " · " + method.label_ar;
+                                        font-size: 12px;
+                                        color: selected_method == method.key ? Palette.accent : Palette.ink;
+                                        width: parent.width;
+                                        vertical-alignment: center;
+                                    }
+                                    TouchArea {
+                                        clicked => { set-method(method.key); }
+                                    }
+                                }
+                            }
+                            VerticalLayout {
+                                spacing: 2px;
+                                for method in methods_right : Rectangle {
+                                    height: 24px;
+                                    background: selected_method == method.key ? Palette.accent-soft : Palette.surface;
+                                    border-radius: Palette.radius-small;
+                                    Text {
+                                        text: method.label + " · " + method.label_ar;
+                                        font-size: 12px;
+                                        color: selected_method == method.key ? Palette.accent : Palette.ink;
+                                        width: parent.width;
+                                        vertical-alignment: center;
+                                    }
+                                    TouchArea {
+                                        clicked => { set-method(method.key); }
+                                    }
+                                }
+                            }
+                        }
+                        Segmented {
+                            label: "Madhab";
+                            options: madhab_options;
+                            selected: selected_madhab;
+                            picked(value) => { set-madhab(value); }
+                        }
+                        Segmented {
+                            label: "High lat.";
+                            options: high_latitude_options;
+                            selected: selected_high_latitude;
+                            picked(value) => { set-high-latitude(value); }
+                        }
+                        Segmented {
+                            label: "Rounding";
+                            options: rounding_options;
+                            selected: selected_rounding;
+                            picked(value) => { set-rounding(value); }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    background: Palette.surface;
+                    border-color: Palette.border;
+                    border-width: 1px;
+                    border-radius: Palette.radius;
+                    Section { title: "APPEARANCE";
+                        Segmented {
+                            label: "Theme";
+                            options: theme_options;
+                            selected: selected_theme;
+                            picked(value) => { set-theme(value); }
+                        }
+                        Segmented {
+                            label: "Language";
+                            options: language_options;
+                            selected: selected_language;
+                            picked(value) => { set-language(value); }
+                        }
+                    }
+                }
+
+                Text {
+                    text: status_message;
+                    font-size: 12px;
+                    color: Palette.accent;
+                }
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    Action {
+                        label: "حفظ";
+                        primary: true;
+                        triggered => { save-settings(); }
+                    }
+                    Action {
+                        label: "إغلاق";
+                        primary: false;
+                        triggered => { close-settings(); }
                     }
                 }
             }

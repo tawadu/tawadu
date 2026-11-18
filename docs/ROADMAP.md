@@ -28,7 +28,7 @@ it beautiful and widely available.
 
 | # | Gap | Consequence |
 |---|---|---|
-| 1 | No settings screen | The app can only ever show defaults; nothing the user changes persists |
+| ~~1~~ | ~~No settings screen~~ | **Done** — settings surface + SQLite write path, verified end to end |
 | 2 | Athkar card is hardcoded | It is a mock, not a feature |
 | 3 | Iqamah offsets default to `0` | No iqamah events are ever scheduled |
 | 4 | No tray, no notifications, no scheduler loop | Nothing ever alerts the user |
@@ -229,6 +229,10 @@ Do not start this before Phase 6 is done.
 
 ## 7. Immediate next steps
 
-1. Phase 1 task 1–2: settings surface + write path. *(next up)*
-2. Then Phase 1 task 3–6 to close the usability gap.
+1. ~~Phase 1 task 1–2: settings surface + write path.~~ **Done** — location search, method,
+   madhab, high-latitude rule, rounding, pre-alert, per-prayer iqamah offsets, theme and
+   language all edit and persist to SQLite. Verified end to end on a real desktop: a
+   stepper edit reached disk and survived.
+2. Remaining Phase 1: city search is prefix + substring (GPS and the full GeoNames set
+   belong to Phase 5), and storage errors should surface instead of being swallowed.
 3. Then Phase 2, the notification engine — the app's reason to exist.

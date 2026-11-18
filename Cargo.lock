@@ -5097,6 +5097,8 @@ dependencies = [
  "clap",
  "env_logger",
  "log",
+ "serde",
+ "serde_json",
  "slint",
  "slint-build",
  "tawadu-audio",
