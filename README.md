@@ -2,7 +2,7 @@
 
 **A calm, offline-first prayer companion.** Accurate prayer times, real adhan audio, your mosque's iqamah, and your athkar — no ads, no account, no tracking.
 
-> Skeleton stage: the repository structure, design system and CI are in place. Application code begins with Phase 0 (prayer math + tests).
+> **Phase 1 in progress.** The calculation core, CLI and a first Slint home surface are built and tested; the plan of record is [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ---
 
@@ -25,9 +25,14 @@ The design identity lives in [`design/`](design/) — see [`design/brand.md`](de
 
 | | |
 |---|---|
-| Phase | 0 — Foundation (not started) |
+| Phase 0 — core | **done** — prayer, qibla, hijri, locations, scheduler, storage, CLI |
+| Phase 1 — usable | **in progress** — home surface renders; settings surface next |
+| Tests | 42, plus `fmt` and `clippy -D warnings` |
 | CI | build + test on Linux, Windows, macOS |
 | Licence | MIT (code) · assets under their own licences |
+
+The plan of record — phases, pitfalls, known debt and open decisions — is
+[docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Layout
 
@@ -42,13 +47,18 @@ design/           brand & visual style
 docs/             architecture, ADRs, voice-pack format, attribution
 ```
 
-## Build (once Phase 0 lands)
+## Build
 
 ```bash
 cargo check --workspace
 cargo test --workspace
-cargo run -p tawadu-app
+cargo run -p tawadu-app          # GUI
+cargo run -p tawadu-app -- times --city "Riyadh" --method umm-al-qura
+cargo run -p tawadu-app -- cities
 ```
+
+On Linux, Slint needs `libfontconfig1-dev libfreetype6-dev libxkbcommon-dev
+libwayland-dev libx11-dev libxdo-dev` (the CI workflow lists the same set).
 
 ## Licence
 
