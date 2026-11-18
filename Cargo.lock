@@ -127,6 +127,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "adhan"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bd086fb73f5aadd33dce37d3b8d6f254587e947443a7e5176af0bf3de7805012"
+
+[[package]]
 name = "adler2"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4320,15 +4326,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
-name = "salah"
-version = "0.7.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04af71d94fdd3fb168cac15a85b2cc89ef8a3518206294cdb4bb923a885c5738"
-dependencies = [
- "chrono",
-]
-
-[[package]]
 name = "same-file"
 version = "1.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5121,11 +5118,11 @@ dependencies = [
 name = "tawadu-core"
 version = "0.1.0"
 dependencies = [
+ "adhan",
  "chrono",
  "chrono-tz",
  "hijridate",
  "rusqlite",
- "salah",
  "serde",
  "serde_json",
 ]

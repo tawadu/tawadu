@@ -11,7 +11,7 @@ use chrono::Utc;
 use slint::{ModelRc, Timer, TimerMode, VecModel};
 use tawadu_core::hijri::from_gregorian;
 use tawadu_core::locations::{find_city, Location};
-use tawadu_core::prayer::{self, Prayer, PrayerConfig, PrayerTimes};
+use tawadu_core::prayer::{self, Prayer, PrayerTimes};
 use tawadu_core::scheduler::{self, EventKind, IqamahOffsets, Timeline};
 use tawadu_core::settings::Settings;
 
@@ -46,13 +46,7 @@ fn countdown(to: chrono::DateTime<Utc>) -> String {
 /// Compute today's times plus the day's timeline for a location and settings.
 fn day(location: &Location, settings: &Settings) -> (PrayerTimes, Timeline) {
     let date = location.local(Utc::now()).date_naive();
-    let config = PrayerConfig {
-        method: settings.config.method,
-        madhab: settings.config.madhab,
-        adjustments: settings.config.adjustments,
-        isha_interval: settings.config.isha_interval,
-    };
-    let times = prayer::compute(date, location.coordinates, &config);
+    let times = prayer::compute(date, location.coordinates, &settings.config);
     let iqamah = IqamahOffsets {
         fajr: settings.iqamah.fajr,
         dhuhr: settings.iqamah.dhuhr,
@@ -64,24 +58,19 @@ fn day(location: &Location, settings: &Settings) -> (PrayerTimes, Timeline) {
     (timeline.times.clone(), timeline)
 }
 
-/// The next prayer event, rolling into tomorrow when today is done.
+/// The next obligatory prayer, rolling into tomorrow when today is done.
+/// `None` only when even tomorrow's Fajr cannot be computed (polar summer).
 fn next_prayer(
     times: &PrayerTimes,
     location: &Location,
     settings: &Settings,
-) -> (Prayer, chrono::DateTime<Utc>) {
+) -> Option<(Prayer, chrono::DateTime<Utc>)> {
     if let Some(next) = times.next_obligatory(Utc::now()) {
-        return next;
+        return Some(next);
     }
     let tomorrow = location.local(Utc::now()).date_naive() + chrono::Duration::days(1);
-    let config = PrayerConfig {
-        method: settings.config.method,
-        madhab: settings.config.madhab,
-        adjustments: settings.config.adjustments,
-        isha_interval: settings.config.isha_interval,
-    };
-    let times = prayer::compute(tomorrow, location.coordinates, &config);
-    (Prayer::Fajr, times.fajr)
+    let times = prayer::compute(tomorrow, location.coordinates, &settings.config);
+    times.fajr.map(|at| (Prayer::Fajr, at))
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -112,6 +101,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (times, timeline) = day(&location, &settings);
     let now = Utc::now();
+    let next = next_prayer(&times, &location, &settings);
+    let next_name = next.map(|(prayer, _)| prayer);
 
     // Header
     ui.set_location_name(location.name.clone().into());
@@ -122,10 +113,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_hijri_date(hijri.into());
 
     // Countdown
-    let (next, at) = next_prayer(&times, &location, &settings);
-    ui.set_next_name(next.name_en().to_owned().into());
-    ui.set_next_name_ar(next.name_ar().to_owned().into());
-    ui.set_countdown(countdown(at).into());
+    match next {
+        Some((prayer, at)) => {
+            ui.set_next_name(prayer.name_en().to_owned().into());
+            ui.set_next_name_ar(prayer.name_ar().to_owned().into());
+            ui.set_countdown(countdown(at).into());
+        }
+        None => {
+            ui.set_next_name("—".into());
+            ui.set_next_name_ar("—".into());
+            ui.set_countdown("--:--:--".into());
+        }
+    }
 
     // Next iqamah
     let iqamah_text = timeline
@@ -152,11 +151,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rows: Vec<Row> = order
         .into_iter()
         .map(|prayer| {
+            let time = times
+                .time(prayer)
+                .map(|instant| hhmm(&location, instant))
+                .unwrap_or_else(|| "--:--".to_string());
             row(
                 prayer.name_en(),
                 prayer.name_ar(),
-                hhmm(&location, times.time(prayer)),
-                prayer == next,
+                time,
+                Some(prayer) == next_name,
                 prayer.is_prayer(),
             )
         })
@@ -168,12 +171,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let timer = Timer::default();
     timer.start(TimerMode::Repeated, Duration::from_secs(1), move || {
         if let Some(ui) = handle.upgrade() {
-            let (next, at) = {
-                let (times, _) = day(&location, &settings);
-                next_prayer(&times, &location, &settings)
-            };
-            ui.set_next_name(next.name_en().to_owned().into());
-            ui.set_countdown(countdown(at).into());
+            let (times, _) = day(&location, &settings);
+            match next_prayer(&times, &location, &settings) {
+                Some((prayer, at)) => {
+                    ui.set_next_name(prayer.name_en().to_owned().into());
+                    ui.set_next_name_ar(prayer.name_ar().to_owned().into());
+                    ui.set_countdown(countdown(at).into());
+                }
+                None => ui.set_countdown("--:--:--".into()),
+            }
         }
     });
 

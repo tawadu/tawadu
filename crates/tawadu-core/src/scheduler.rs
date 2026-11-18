@@ -82,7 +82,9 @@ pub fn build(times: PrayerTimes, iqamah: &IqamahOffsets, pre_alert_minutes: u32)
     let mut events = Vec::new();
 
     for prayer in OBLIGATORY {
-        let at = times.time(prayer);
+        let Some(at) = times.time(prayer) else {
+            continue;
+        };
 
         if pre_alert_minutes > 0 {
             events.push(Event {
@@ -109,21 +111,27 @@ pub fn build(times: PrayerTimes, iqamah: &IqamahOffsets, pre_alert_minutes: u32)
         }
     }
 
-    events.push(Event {
-        kind: EventKind::AthkarWindow,
-        label: "Morning athkar",
-        at: times.fajr + Duration::minutes(30),
-    });
-    events.push(Event {
-        kind: EventKind::AthkarWindow,
-        label: "Evening athkar",
-        at: times.asr + Duration::minutes(30),
-    });
-    events.push(Event {
-        kind: EventKind::AthkarWindow,
-        label: "Sleep athkar",
-        at: times.isha + Duration::minutes(30),
-    });
+    if let Some(fajr) = times.fajr {
+        events.push(Event {
+            kind: EventKind::AthkarWindow,
+            label: "Morning athkar",
+            at: fajr + Duration::minutes(30),
+        });
+    }
+    if let Some(asr) = times.asr {
+        events.push(Event {
+            kind: EventKind::AthkarWindow,
+            label: "Evening athkar",
+            at: asr + Duration::minutes(30),
+        });
+    }
+    if let Some(isha) = times.isha {
+        events.push(Event {
+            kind: EventKind::AthkarWindow,
+            label: "Sleep athkar",
+            at: isha + Duration::minutes(30),
+        });
+    }
 
     events.sort_by(|a, b| {
         a.at.cmp(&b.at)

@@ -120,11 +120,14 @@ fn run_times(
         Prayer::Isha,
     ];
     for prayer in order {
-        let local = location.local(times.time(prayer));
+        let time = times
+            .time(prayer)
+            .map(|instant| location.local(instant).format("%H:%M").to_string())
+            .unwrap_or_else(|| "--:--".to_string());
         println!(
             "{:<10} {:>8}   {}",
             prayer.name_en(),
-            local.format("%H:%M"),
+            time,
             prayer.name_ar()
         );
     }

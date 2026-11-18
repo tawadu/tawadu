@@ -1,18 +1,17 @@
-//! Prayer-time calculation: methods, madhabs and manual adjustments.
+//! Prayer-time calculation: methods, madhabs, high-latitude rules, rounding and
+//! manual adjustments.
 //!
 //! All astronomy is performed in UTC; the caller adds the local offset. Never
 //! convert to local time inside this module.
 //!
-//! **Note:** the underlying `salah` crate does not publicly expose its
-//! high-latitude rule or rounding options, so those are not configurable here
-//! yet. They are tracked in `docs/architecture.md` as a candidate improvement.
+//! Backed by the `adhan` crate, which exposes every configuration knob —
+//! including the high-latitude rule and rounding, which `salah` keeps private.
 
-use chrono::{DateTime, NaiveDate, Utc};
-use salah::prelude::{
-    Adjustment as SalahAdjustment, Configuration, Coordinates as SalahCoordinates,
-    Madhab as SalahMadhab, Method as SalahMethod, Prayer as SalahPrayer,
-    PrayerTimes as SalahPrayerTimes,
+use adhan::{
+    HighLatitudeRule as AdhanHighLatitudeRule, Madhab as AdhanMadhab, Method as AdhanMethod,
+    Parameters as AdhanParameters, Rounding as AdhanRounding,
 };
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
 /// A geographic point. Positive latitude is north, positive longitude is east.
@@ -28,10 +27,6 @@ impl Coordinates {
             latitude,
             longitude,
         }
-    }
-
-    fn to_salah(self) -> SalahCoordinates {
-        SalahCoordinates::new(self.latitude, self.longitude)
     }
 }
 
@@ -140,6 +135,42 @@ impl Default for Madhab {
     }
 }
 
+/// How Fajr and Isha are bounded where twilight never ends (above ~48°).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HighLatitudeRule {
+    /// Split the night in half.
+    MiddleOfTheNight,
+    /// Use the last seventh of the night.
+    SeventhOfTheNight,
+    /// Use a fixed fraction of the twilight angle.
+    TwilightAngle,
+}
+
+impl Default for HighLatitudeRule {
+    fn default() -> Self {
+        HighLatitudeRule::MiddleOfTheNight
+    }
+}
+
+/// How seconds are handled when a time is reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Rounding {
+    /// To the nearest minute.
+    Nearest,
+    /// Up to the next minute.
+    Up,
+    /// No rounding; seconds are kept.
+    None,
+}
+
+impl Default for Rounding {
+    fn default() -> Self {
+        Rounding::Nearest
+    }
+}
+
 /// Per-prayer manual adjustment in minutes (positive or negative).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Adjustments {
@@ -173,6 +204,10 @@ pub struct PrayerConfig {
     /// Override the Isha interval (minutes after Maghrib), used by Umm al-Qura
     /// and Qatar. `None` keeps the method's own value.
     pub isha_interval: Option<i32>,
+    /// How Fajr and Isha are bounded at high latitude.
+    pub high_latitude_rule: HighLatitudeRule,
+    /// How seconds are rounded when reporting a time.
+    pub rounding: Rounding,
 }
 
 impl Default for PrayerConfig {
@@ -182,78 +217,92 @@ impl Default for PrayerConfig {
             madhab: Madhab::default(),
             adjustments: Adjustments::default(),
             isha_interval: None,
+            high_latitude_rule: HighLatitudeRule::default(),
+            rounding: Rounding::default(),
         }
     }
 }
 
 impl PrayerConfig {
-    fn to_parameters(&self) -> salah::Parameters {
-        let mut params = match self.method {
-            Method::MuslimWorldLeague => {
-                Configuration::with(SalahMethod::MuslimWorldLeague, self.madhab.into())
-            }
-            Method::Egyptian => Configuration::with(SalahMethod::Egyptian, self.madhab.into()),
-            Method::Karachi => Configuration::with(SalahMethod::Karachi, self.madhab.into()),
-            Method::UmmAlQura => Configuration::with(SalahMethod::UmmAlQura, self.madhab.into()),
-            Method::Dubai => Configuration::with(SalahMethod::Dubai, self.madhab.into()),
-            Method::MoonsightingCommittee => {
-                Configuration::with(SalahMethod::MoonsightingCommittee, self.madhab.into())
-            }
-            Method::NorthAmerica => {
-                Configuration::with(SalahMethod::NorthAmerica, self.madhab.into())
-            }
-            Method::Kuwait => Configuration::with(SalahMethod::Kuwait, self.madhab.into()),
-            Method::Qatar => Configuration::with(SalahMethod::Qatar, self.madhab.into()),
-            Method::Singapore => Configuration::with(SalahMethod::Singapore, self.madhab.into()),
-            Method::Tehran => Configuration::with(SalahMethod::Tehran, self.madhab.into()),
-            Method::Turkey => Configuration::with(SalahMethod::Turkey, self.madhab.into()),
-            Method::Custom {
-                fajr_angle,
-                isha_angle,
-            } => Configuration::new(fajr_angle, isha_angle)
-                .madhab(self.madhab.into())
-                .done(),
+    fn to_parameters(&self) -> AdhanParameters {
+        let method = match self.method {
+            Method::MuslimWorldLeague => AdhanMethod::MuslimWorldLeague,
+            Method::Egyptian => AdhanMethod::Egyptian,
+            Method::Karachi => AdhanMethod::Karachi,
+            Method::UmmAlQura => AdhanMethod::UmmAlQura,
+            Method::Dubai => AdhanMethod::Dubai,
+            Method::MoonsightingCommittee => AdhanMethod::MoonsightingCommittee,
+            Method::NorthAmerica => AdhanMethod::NorthAmerica,
+            Method::Kuwait => AdhanMethod::Kuwait,
+            Method::Qatar => AdhanMethod::Qatar,
+            Method::Singapore => AdhanMethod::Singapore,
+            Method::Tehran => AdhanMethod::Tehran,
+            Method::Turkey => AdhanMethod::Turkey,
+            Method::Custom { .. } => AdhanMethod::Other,
         };
 
-        params.adjustments = SalahAdjustment::new()
-            .fajr(self.adjustments.fajr)
-            .sunrise(self.adjustments.sunrise)
-            .dhuhr(self.adjustments.dhuhr)
-            .asr(self.adjustments.asr)
-            .maghrib(self.adjustments.maghrib)
-            .isha(self.adjustments.isha)
-            .done();
-        if let Some(interval) = self.isha_interval {
-            params.isha_interval = interval;
+        let mut params = AdhanParameters::for_method(method);
+
+        if let Method::Custom {
+            fajr_angle,
+            isha_angle,
+        } = self.method
+        {
+            params.fajr_angle = fajr_angle;
+            params.isha_angle = isha_angle;
+            params.isha_interval = 0.0;
         }
+
+        params.madhab = match self.madhab {
+            Madhab::Shafi => AdhanMadhab::Shafi,
+            Madhab::Hanafi => AdhanMadhab::Hanafi,
+        };
+        params.high_latitude_rule = match self.high_latitude_rule {
+            HighLatitudeRule::MiddleOfTheNight => AdhanHighLatitudeRule::MiddleOfTheNight,
+            HighLatitudeRule::SeventhOfTheNight => AdhanHighLatitudeRule::SeventhOfTheNight,
+            HighLatitudeRule::TwilightAngle => AdhanHighLatitudeRule::TwilightAngle,
+        };
+        params.rounding = match self.rounding {
+            Rounding::Nearest => AdhanRounding::Nearest,
+            Rounding::Up => AdhanRounding::Up,
+            Rounding::None => AdhanRounding::None,
+        };
+
+        params.fajr_minutes = self.adjustments.fajr as f64;
+        params.sunrise_minutes = self.adjustments.sunrise as f64;
+        params.dhuhr_minutes = self.adjustments.dhuhr as f64;
+        params.asr_minutes = self.adjustments.asr as f64;
+        params.maghrib_minutes = self.adjustments.maghrib as f64;
+        params.isha_minutes = self.adjustments.isha as f64;
+
+        if let Some(interval) = self.isha_interval {
+            params.isha_interval = f64::from(interval);
+            params.isha_angle = 0.0;
+        }
+
         params
     }
 }
 
-impl From<Madhab> for SalahMadhab {
-    fn from(value: Madhab) -> Self {
-        match value {
-            Madhab::Shafi => SalahMadhab::Shafi,
-            Madhab::Hanafi => SalahMadhab::Hanafi,
-        }
-    }
-}
-
 /// One day of computed times, all in UTC.
+///
+/// A time is `None` when the sun never reaches the position it needs, which
+/// happens inside the polar circles. That is the honest answer rather than an
+/// invented one; the caller decides what to show.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PrayerTimes {
-    pub fajr: DateTime<Utc>,
-    pub sunrise: DateTime<Utc>,
-    pub dhuhr: DateTime<Utc>,
-    pub asr: DateTime<Utc>,
-    pub maghrib: DateTime<Utc>,
-    pub isha: DateTime<Utc>,
-    pub qiyam: DateTime<Utc>,
+    pub fajr: Option<DateTime<Utc>>,
+    pub sunrise: Option<DateTime<Utc>>,
+    pub dhuhr: Option<DateTime<Utc>>,
+    pub asr: Option<DateTime<Utc>>,
+    pub maghrib: Option<DateTime<Utc>>,
+    pub isha: Option<DateTime<Utc>>,
+    pub qiyam: Option<DateTime<Utc>>,
 }
 
 impl PrayerTimes {
     /// Time of a single event.
-    pub fn time(&self, prayer: Prayer) -> DateTime<Utc> {
+    pub fn time(&self, prayer: Prayer) -> Option<DateTime<Utc>> {
         match prayer {
             Prayer::Fajr => self.fajr,
             Prayer::Sunrise => self.sunrise,
@@ -265,24 +314,21 @@ impl PrayerTimes {
         }
     }
 
-    /// The prayer period that contains `now`, if `now` is inside today's span.
+    /// The prayer period that contains `now`.
     pub fn current(&self, now: DateTime<Utc>) -> Option<Prayer> {
-        let mut current = None;
-        for prayer in Prayer::all() {
-            if self.time(prayer) <= now {
-                current = Some(prayer);
-            } else {
-                break;
-            }
-        }
-        current
+        Prayer::all()
+            .into_iter()
+            .filter_map(|prayer| self.time(prayer).map(|time| (prayer, time)))
+            .filter(|(_, time)| *time <= now)
+            .map(|(prayer, _)| prayer)
+            .next_back()
     }
 
     /// The next event strictly after `now`, if today still has one.
     pub fn next(&self, now: DateTime<Utc>) -> Option<(Prayer, DateTime<Utc>)> {
         Prayer::all()
             .into_iter()
-            .map(|prayer| (prayer, self.time(prayer)))
+            .filter_map(|prayer| self.time(prayer).map(|time| (prayer, time)))
             .find(|(_, time)| *time > now)
     }
 
@@ -291,23 +337,86 @@ impl PrayerTimes {
         Prayer::all()
             .into_iter()
             .filter(|prayer| prayer.is_prayer())
-            .map(|prayer| (prayer, self.time(prayer)))
+            .filter_map(|prayer| self.time(prayer).map(|time| (prayer, time)))
             .find(|(_, time)| *time > now)
+    }
+}
+
+/// A clock reading on a given date, as an absolute instant.
+fn at(date: NaiveDate, reading: (i64, u32, u32)) -> DateTime<Utc> {
+    date.and_hms_opt(reading.0 as u32, reading.1, reading.2)
+        .expect("a normalised clock reading is a valid time")
+        .and_utc()
+}
+
+/// A reading that falls before the day's transit. Far enough east, that instant
+/// is on the previous UTC day, so step back when the candidate lands after it.
+fn before(date: NaiveDate, reading: (i64, u32, u32), anchor: DateTime<Utc>) -> DateTime<Utc> {
+    let candidate = at(date, reading);
+    if candidate > anchor {
+        candidate - Duration::days(1)
+    } else {
+        candidate
+    }
+}
+
+/// A reading that falls after the day's transit. Far enough west, that instant
+/// is on the next UTC day, so step forward when the candidate lands before it.
+fn after(date: NaiveDate, reading: (i64, u32, u32), anchor: DateTime<Utc>) -> DateTime<Utc> {
+    let candidate = at(date, reading);
+    if candidate < anchor {
+        candidate + Duration::days(1)
+    } else {
+        candidate
     }
 }
 
 /// Compute one day of prayer times for a place and a configuration.
 pub fn compute(date: NaiveDate, coordinates: Coordinates, config: &PrayerConfig) -> PrayerTimes {
     let params = config.to_parameters();
-    let times = SalahPrayerTimes::new(date, coordinates.to_salah(), params);
+    let raw = adhan::prayer_times(
+        date.year(),
+        date.month(),
+        date.day(),
+        coordinates.latitude,
+        coordinates.longitude,
+        &params,
+    );
+
+    // The crate returns UTC clock readings with no day attached. Anchor them to
+    // the day's transit so a reading that belongs to a neighbouring UTC day
+    // lands on the right date.
+    let anchor = raw
+        .dhuhr
+        .map(|reading| at(date, reading))
+        .unwrap_or_else(|| at(date, (12, 0, 0)));
+
+    let fajr = raw.fajr.map(|reading| before(date, reading, anchor));
+    let sunrise = raw.sunrise.map(|reading| before(date, reading, anchor));
+    let dhuhr = raw.dhuhr.map(|reading| at(date, reading));
+    let asr = raw.asr.map(|reading| after(date, reading, anchor));
+    let maghrib = raw.maghrib.map(|reading| after(date, reading, anchor));
+    let isha = raw.isha.map(|reading| after(date, reading, anchor));
+
+    let qiyam = adhan::sunnah_times(
+        date.year(),
+        date.month(),
+        date.day(),
+        coordinates.latitude,
+        coordinates.longitude,
+        &params,
+    )
+    .last_third_of_the_night
+    .and_then(|reading| maghrib.map(|sunset| after(date, reading, sunset)));
+
     PrayerTimes {
-        fajr: times.time(SalahPrayer::Fajr),
-        sunrise: times.time(SalahPrayer::Sunrise),
-        dhuhr: times.time(SalahPrayer::Dhuhr),
-        asr: times.time(SalahPrayer::Asr),
-        maghrib: times.time(SalahPrayer::Maghrib),
-        isha: times.time(SalahPrayer::Isha),
-        qiyam: times.time(SalahPrayer::Qiyam),
+        fajr,
+        sunrise,
+        dhuhr,
+        asr,
+        maghrib,
+        isha,
+        qiyam,
     }
 }
 
@@ -316,8 +425,8 @@ mod tests {
     use super::*;
     use chrono::{DateTime, Duration, NaiveDate, TimeZone, Timelike, Utc};
 
-    fn mins(t: DateTime<Utc>, offset_hours: i64) -> i64 {
-        let local = t + Duration::hours(offset_hours);
+    fn mins(time: Option<DateTime<Utc>>, offset_hours: i64) -> i64 {
+        let local = time.unwrap() + Duration::hours(offset_hours);
         i64::from(local.hour()) * 60 + i64::from(local.minute())
     }
 
@@ -417,7 +526,10 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!((adjusted.dhuhr - base.dhuhr).num_minutes(), 5);
+        assert_eq!(
+            (adjusted.dhuhr.unwrap() - base.dhuhr.unwrap()).num_minutes(),
+            5
+        );
         assert_eq!(adjusted.fajr, base.fajr);
         assert_eq!(adjusted.isha, base.isha);
     }
@@ -432,7 +544,7 @@ mod tests {
         // 2026-11-17 08:00 UTC == 11:00 in Riyadh: after sunrise, before Dhuhr.
         let now = Utc.with_ymd_and_hms(2026, 11, 17, 8, 0, 0).unwrap();
         assert_eq!(t.current(now), Some(Prayer::Sunrise));
-        assert_eq!(t.next(now), Some((Prayer::Dhuhr, t.dhuhr)));
+        assert_eq!(t.next(now), Some((Prayer::Dhuhr, t.dhuhr.unwrap())));
     }
 
     #[test]
@@ -453,6 +565,116 @@ mod tests {
         // 2026-11-17 15:10 UTC == 18:10 in Riyadh: after Maghrib, before Isha.
         let now = Utc.with_ymd_and_hms(2026, 11, 17, 15, 10, 0).unwrap();
         assert_eq!(t.next_obligatory(now).map(|(p, _)| p), Some(Prayer::Isha));
+    }
+
+    #[test]
+    fn times_are_in_order() {
+        let t = compute(
+            date(),
+            Coordinates::new(24.7136, 46.6753),
+            &PrayerConfig::default(),
+        );
+        let order = [
+            t.fajr, t.sunrise, t.dhuhr, t.asr, t.maghrib, t.isha, t.qiyam,
+        ];
+        for pair in order.windows(2) {
+            assert!(pair[0] < pair[1], "the day must run in order");
+        }
+    }
+
+    #[test]
+    fn far_east_city_keeps_the_right_utc_day() {
+        // Auckland is UTC+13: its local 17 Nov times fall on 16 Nov UTC.
+        let t = compute(
+            date(),
+            Coordinates::new(-36.8485, 174.7633),
+            &PrayerConfig {
+                method: Method::MuslimWorldLeague,
+                ..Default::default()
+            },
+        );
+        let local_minutes = |time: Option<DateTime<Utc>>| {
+            let local = time.unwrap() + Duration::hours(13);
+            i64::from(local.hour()) * 60 + i64::from(local.minute())
+        };
+        let close = |actual: i64, expected: &str| {
+            let mut it = expected.split(':');
+            let h: i64 = it.next().unwrap().parse().unwrap();
+            let m: i64 = it.next().unwrap().parse().unwrap();
+            assert!(
+                (actual - (h * 60 + m)).abs() <= 1,
+                "got {actual} min, expected {h}:{m:02}"
+            );
+        };
+        close(local_minutes(t.fajr), "04:19");
+        close(local_minutes(t.sunrise), "06:02");
+        close(local_minutes(t.dhuhr), "13:06");
+        close(local_minutes(t.maghrib), "20:10");
+        close(local_minutes(t.isha), "21:46");
+        // And they really are on the previous UTC day.
+        assert_eq!(
+            t.fajr.unwrap().date_naive(),
+            NaiveDate::from_ymd_opt(2026, 11, 16).unwrap()
+        );
+    }
+
+    #[test]
+    fn high_latitude_rule_changes_fajr() {
+        // Oslo in late November: the twilight angle still resolves, but the two
+        // rules disagree, which is what makes the setting real.
+        let middle = compute(
+            date(),
+            Coordinates::new(59.9139, 10.7522),
+            &PrayerConfig {
+                method: Method::MuslimWorldLeague,
+                high_latitude_rule: HighLatitudeRule::MiddleOfTheNight,
+                ..Default::default()
+            },
+        );
+        let seventh = compute(
+            date(),
+            Coordinates::new(59.9139, 10.7522),
+            &PrayerConfig {
+                method: Method::MuslimWorldLeague,
+                high_latitude_rule: HighLatitudeRule::SeventhOfTheNight,
+                ..Default::default()
+            },
+        );
+        assert_ne!(middle.fajr, seventh.fajr, "the rule must change Fajr");
+    }
+
+    #[test]
+    fn rounding_up_is_never_earlier_than_nearest() {
+        let nearest = compute(
+            date(),
+            Coordinates::new(24.7136, 46.6753),
+            &PrayerConfig {
+                rounding: Rounding::Nearest,
+                ..Default::default()
+            },
+        );
+        let up = compute(
+            date(),
+            Coordinates::new(24.7136, 46.6753),
+            &PrayerConfig {
+                rounding: Rounding::Up,
+                ..Default::default()
+            },
+        );
+        assert!(up.dhuhr >= nearest.dhuhr);
+        assert!(up.fajr >= nearest.fajr);
+    }
+
+    #[test]
+    fn polar_day_has_no_sunrise_or_sunset() {
+        // Tromsø, midsummer: the sun never sets, so the honest answer is `None`.
+        let t = compute(
+            NaiveDate::from_ymd_opt(2026, 6, 21).unwrap(),
+            Coordinates::new(69.6492, 18.9553),
+            &PrayerConfig::default(),
+        );
+        assert!(t.sunrise.is_none(), "the midnight sun has no sunrise");
+        assert!(t.maghrib.is_none(), "the midnight sun has no sunset");
     }
 
     #[test]

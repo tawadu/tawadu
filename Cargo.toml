@@ -16,7 +16,7 @@ readme = "README.md"
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 hijridate = "0.1"
-salah = "0.7"
+adhan = "0.2"
 # --- storage ---
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }

@@ -30,10 +30,22 @@ design/                brand & visual style (tokens are the source of truth)
 - **Persistence** — SQLite for settings, history, athkar progress, pack metadata
   and mosque profiles; JSON export for portability.
 
+## Calculation backend
+
+`adhan` 0.2 computes the times. It exposes every knob — method, madhab,
+high-latitude rule, rounding, shafaq, polar-circle resolution — so `PrayerConfig`
+maps onto it directly.
+
+`adhan` returns UTC **clock readings with no date attached**, so `prayer.rs`
+reconstructs the absolute instant by anchoring each reading to the day's transit:
+a reading that belongs to the previous UTC day (anywhere far enough east, e.g.
+Auckland) steps back, and one that belongs to the next day steps forward.
+
 ## Known limitations
 
-- **High-latitude rule and rounding are not configurable yet.** The `salah` crate keeps those types in a private module, so Tawadu uses its defaults (middle-of-the-night, nearest minute). The `adhan` crate exposes them and is the likely switch if that becomes important.
 - The city database is a small bundled list; the full GeoNames set is a later addition.
+- Inside the polar circles a time can be genuinely undefined (the midnight sun has
+  no sunrise). `PrayerTimes` holds `Option`s for exactly that reason.
 
 ## Correctness rules (non-negotiable)
 
