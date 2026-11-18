@@ -5,7 +5,7 @@
 
 use crate::settings::Settings;
 use rusqlite::{params, Connection};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Current schema version. Bump on every migration.
 pub const SCHEMA_VERSION: i32 = 1;
@@ -16,6 +16,28 @@ pub struct Storage {
 }
 
 impl Storage {
+    /// The platform's default database path (`…/tawadu/tawadu.db`).
+    pub fn default_db_path() -> Option<PathBuf> {
+        #[cfg(target_os = "windows")]
+        let base = PathBuf::from(std::env::var_os("APPDATA")?);
+        #[cfg(target_os = "macos")]
+        let base = PathBuf::from(std::env::var_os("HOME")?).join("Library/Application Support");
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let base = match std::env::var_os("XDG_CONFIG_HOME") {
+            Some(dir) => PathBuf::from(dir),
+            None => PathBuf::from(std::env::var_os("HOME")?).join(".config"),
+        };
+
+        let dir = base.join("tawadu");
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir.join("tawadu.db"))
+    }
+
+    /// Open the default database, or `None` if it cannot be created.
+    pub fn open_default() -> Option<Self> {
+        Self::default_db_path().and_then(|path| Self::open(&path).ok())
+    }
+
     /// Open (and migrate) a database file.
     pub fn open(path: &Path) -> Result<Self, rusqlite::Error> {
         let conn = Connection::open(path)?;

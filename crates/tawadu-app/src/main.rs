@@ -98,10 +98,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
     log::info!("Tawadu starting (core v{})", tawadu_core::VERSION);
 
-    let settings = tawadu_core::storage::Storage::open_in_memory()
-        .ok()
-        .and_then(|storage| storage.load_settings().ok().flatten())
-        .unwrap_or_default();
+    let settings = match tawadu_core::storage::Storage::open_default() {
+        Some(storage) => storage.load_settings().ok().flatten().unwrap_or_default(),
+        None => tawadu_core::storage::Storage::open_in_memory()
+            .ok()
+            .and_then(|storage| storage.load_settings().ok().flatten())
+            .unwrap_or_default(),
+    };
     let location =
         find_city(&settings.location.name).unwrap_or_else(|| settings.location.resolve());
 
