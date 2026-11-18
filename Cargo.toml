@@ -38,7 +38,9 @@ notify-rust = "4"
 # share one muda copy. Do NOT enable the winit backend's dormant muda feature.
 # ksni = pure-Rust StatusNotifier tray on Linux (no GTK/appindicator system deps).
 tray-icon = { version = "0.26", default-features = false, features = ["ksni"] }
-muda = "0.21"
+# muda's DEFAULT features enable gtk3 on Linux — off, or glib-sys drags GTK
+# into the build despite ksni. tray-icon's ksni feature adds muda/snapshot.
+muda = { version = "0.21", default-features = false }
 single-instance = "0.3"
 # --- misc ---
 log = "0.4"

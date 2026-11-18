@@ -571,15 +571,14 @@ fn announce(
 /// Send an OS notification. Returns `false` when the platform has no usable
 /// notification service; the in-app banner then carries the message.
 fn os_notify(title: &str, body: &str) -> bool {
-    match notify_rust::Notification::new()
-        .appname("Tawadu")
-        // Windows: attribute the toast to our registered AUMID instead of
-        // notify-rust's PowerShell default (ADR 0002 condition 3).
-        .app_id(tray::AUMID)
-        .summary(title)
-        .body(body)
-        .show()
-    {
+    let mut notification = notify_rust::Notification::new();
+    notification.appname("Tawadu").summary(title).body(body);
+    // Windows: attribute the toast to our registered AUMID instead of
+    // notify-rust's PowerShell default (ADR 0002 condition 3). `app_id` is a
+    // Windows-only method in notify-rust 4 — it does not exist on macOS.
+    #[cfg(target_os = "windows")]
+    notification.app_id(tray::AUMID);
+    match notification.show() {
         Ok(_) => true,
         Err(error) => {
             log::warn!("OS notification unavailable ({error}); the in-app banner carried it");

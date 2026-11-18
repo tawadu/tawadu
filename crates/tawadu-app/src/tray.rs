@@ -146,7 +146,7 @@ pub fn macos_app_menu() -> muda::Menu {
         "quit",
         "Quit Tawadu",
         true,
-        Some(Accelerator::new(Modifiers::SUPER, Code::KeyQ)),
+        Some(Accelerator::new(Modifiers::META, Code::KeyQ)),
     );
     if let Err(error) = menu.append(&quit) {
         log::warn!("could not build the macOS app menu ({error}); Cmd+Q may not quit");
@@ -190,7 +190,8 @@ mod tests {
     #[test]
     fn icon_contains_only_accent_or_transparency() {
         let rgba = icon_rgba(32);
-        for px in rgba.chunks_exact(4) {
+        for i in (0..rgba.len()).step_by(4) {
+            let px = &rgba[i..i + 4];
             assert!(
                 px == [ACCENT.0, ACCENT.1, ACCENT.2, 255] || px == [0, 0, 0, 0],
                 "stray pixel {px:?}"
