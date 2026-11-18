@@ -501,6 +501,27 @@ fn now() -> DateTime<Utc> {
 /// The scheduler never sleeps longer than this, so a clock change, a wake from
 /// sleep or a settings edit is picked up within a minute.
 const MAX_SLICE: Duration = Duration::from_secs(60);
+
+/// Parse the debug slice override. Unset, invalid or zero = the production
+/// 60 s — a zero slice would busy-loop the scheduler thread.
+fn parse_slice_ms(value: Option<&str>) -> Duration {
+    value
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|&ms| ms > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(MAX_SLICE)
+}
+
+/// The scheduler's max sleep slice, read once. `TAWADU_DEBUG_MAX_SLICE_MS`
+/// overrides it for the exit test: the slice is REAL time, so at debug scale
+/// 12 a 60 s slice advances the debug clock 720 s — past the 120 s late
+/// tolerance — and every event is silently dropped. A 5 s slice (60 debug-s)
+/// keeps the scale-12 exit test runnable in ~2 minutes. Off by default.
+fn max_slice() -> Duration {
+    static SLICE: OnceLock<Duration> = OnceLock::new();
+    *SLICE
+        .get_or_init(|| parse_slice_ms(std::env::var("TAWADU_DEBUG_MAX_SLICE_MS").ok().as_deref()))
+}
 /// An event the machine slept through is still worth announcing, but only just.
 const LATE_TOLERANCE_SECONDS: i64 = 120;
 /// How long the in-app banner stays up.
@@ -600,6 +621,9 @@ fn spawn_scheduler(
     std::thread::Builder::new()
         .name("tawadu-scheduler".into())
         .spawn(move || {
+            // Read once: the slice is a debug-clock testing knob, not a
+            // setting that changes mid-run.
+            let max_slice = max_slice();
             // The instant up to which every event has been considered. It only
             // advances after a sweep, which is what stops a machine that slept past
             // several events from hiding all but the one it was waiting on.
@@ -615,8 +639,8 @@ fn spawn_scheduler(
                 let wait = next
                     .as_ref()
                     .map(|event| (event.at - watermark).to_std().unwrap_or(Duration::ZERO))
-                    .unwrap_or(MAX_SLICE)
-                    .min(MAX_SLICE);
+                    .unwrap_or(max_slice)
+                    .min(max_slice);
 
                 match wake.recv_timeout(wait) {
                     Ok(()) => {}
@@ -1185,4 +1209,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.run()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slice_override_defaults_to_production_sixty_seconds() {
+        assert_eq!(parse_slice_ms(None), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn slice_override_accepts_milliseconds() {
+        assert_eq!(parse_slice_ms(Some("5000")), Duration::from_secs(5));
+        assert_eq!(parse_slice_ms(Some("250")), Duration::from_millis(250));
+    }
+
+    #[test]
+    fn slice_override_rejects_garbage_and_zero() {
+        assert_eq!(parse_slice_ms(Some("garbage")), Duration::from_secs(60));
+        assert_eq!(parse_slice_ms(Some("")), Duration::from_secs(60));
+        // A zero slice would busy-loop the scheduler thread.
+        assert_eq!(parse_slice_ms(Some("0")), Duration::from_secs(60));
+    }
 }

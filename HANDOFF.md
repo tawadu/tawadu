@@ -123,6 +123,7 @@ The app reads three env vars, all off by default:
 | `TAWADU_DEBUG_BANNER_MS` | overrides the 8 s banner auto-hide |
 | `TAWADU_DEBUG_AUTOCLOSE_MS` | dispatches a real `CloseRequested` after N ms (tray regression test) |
 | `TAWADU_DEBUG_AUTOQUIT_MS` | calls `quit_event_loop()` after N ms (tray regression test) |
+| `TAWADU_DEBUG_MAX_SLICE_MS` | overrides the scheduler's 60 s max sleep slice (REAL time). Needed at high time scales: a 60 s slice at scale 12 advances the debug clock 720 s, past the 120 s late tolerance, so every event is dropped. Use `5000` with scale 12 |
 
 This is how the sleep/wake path was proven without putting the machine to sleep:
 launch 1 minute before the Fajr pre-alert with scale `12`, wait ~65 s, and the sweep
@@ -362,7 +363,7 @@ Phase 7 (mobile, only after Phase 6).
 | Settings DB | `%APPDATA%\tawadu\tawadu.db` (Windows) |
 | Default settings | Riyadh · Umm al-Qura · pre-alert 10 · all notifications on · quiet hours 22:00–06:00 (off) |
 | Verified timings 2026-11-17 | Riyadh: Fajr 04:49 · Sunrise 06:11 · Dhuhr 11:38 · Asr 14:44 · Maghrib 17:06 · Isha 18:36 (UTC+3) |
-| Debug clock | `TAWADU_DEBUG_NOW`, `TAWADU_DEBUG_TIME_SCALE`, `TAWADU_DEBUG_BANNER_MS`, `TAWADU_DEBUG_AUTOCLOSE_MS`, `TAWADU_DEBUG_AUTOQUIT_MS` |
+| Debug clock | `TAWADU_DEBUG_NOW`, `TAWADU_DEBUG_TIME_SCALE`, `TAWADU_DEBUG_BANNER_MS`, `TAWADU_DEBUG_AUTOCLOSE_MS`, `TAWADU_DEBUG_AUTOQUIT_MS`, `TAWADU_DEBUG_MAX_SLICE_MS` |
 
 **First thing to do:** read `docs/ROADMAP.md` end to end, run the green gate, launch
 the app, and confirm the home screen shows Riyadh with a live countdown. Then Step 1.

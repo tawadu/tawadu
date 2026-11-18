@@ -59,6 +59,9 @@ pub fn close_response(tray_ok: bool) -> slint::CloseRequestResponse {
 /// The AUMID toasts are attributed to. Registered with the shell before any
 /// toast (Windows) and passed to `notify-rust` via `app_id` — its default is
 /// PowerShell's AUMID, which is why unpackaged-exe toasts silently vanish.
+/// Windows-only: both uses are cfg-gated, so the constant is too (dead-code
+/// lint on macOS/Linux otherwise).
+#[cfg(target_os = "windows")]
 pub const AUMID: &str = "org.tawadu.Tawadu";
 
 /// ADR 0002 adapter: the ONE place that touches `private_unstable_api`.
