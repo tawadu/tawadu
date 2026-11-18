@@ -7,7 +7,10 @@
 //! nothing in `.slint` persists anything by itself.
 
 mod cli;
+mod restore;
+mod tray;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -570,6 +573,9 @@ fn announce(
 fn os_notify(title: &str, body: &str) -> bool {
     match notify_rust::Notification::new()
         .appname("Tawadu")
+        // Windows: attribute the toast to our registered AUMID instead of
+        // notify-rust's PowerShell default (ADR 0002 condition 3).
+        .app_id(tray::AUMID)
         .summary(title)
         .body(body)
         .show()
@@ -671,11 +677,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if !claim_single_instance() {
-        eprintln!("Tawadu is already running.");
+        // ADR 0002 condition 5: restore the existing (possibly hidden) window
+        // instead of printing into the void.
+        if restore::signal_existing() {
+            eprintln!("Tawadu is already running — restoring its window.");
+        } else {
+            eprintln!("Tawadu is already running.");
+        }
         return Ok(());
     }
 
     env_logger::init();
+    // Before any toast: attribute notifications to Tawadu, not PowerShell.
+    tray::register_aumid();
     log::info!("Tawadu starting (core v{})", tawadu_core::VERSION);
 
     let storage = Storage::open_default();
@@ -715,11 +729,90 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     state.lock().unwrap().wake = Some(Arc::new(wake_tx));
 
     let ui = MainWindow::new()?;
+    // ADR 0002: hide() drops the window's keepalive; without this held
+    // KeepAlive the event loop would quit on the first close-to-tray. The
+    // type is not nameable from the facade — a main() local for the app
+    // lifetime, dropped only when main returns after Quit.
+    let _keepalive = tray::hold_event_loop()?;
     apply_theme(&ui, state.lock().unwrap().settings.theme);
     apply_home(&ui, &state.lock().unwrap());
     apply_settings(&ui, &state.lock().unwrap());
     if let Some(message) = &warning {
         ui.set_status_message(message.clone().into());
+    }
+
+    // ---- tray (ADR 0002) ----
+    let hidden = Arc::new(AtomicBool::new(false));
+    let initial_target = {
+        let guard = state.lock().unwrap();
+        let location = guard.location();
+        let (times, _) = day(&location, &guard.settings);
+        next_prayer(&times, &location, &guard.settings)
+    };
+    let initial_tooltip = match initial_target {
+        Some((prayer, at)) => {
+            let location = state.lock().unwrap().location();
+            tray::tooltip_text(Some((prayer.name_en(), &hhmm(&location, at))))
+        }
+        None => tray::tooltip_text(None),
+    };
+    let tray = match tray::build_tray(&initial_tooltip) {
+        Ok(tray) => Some(tray),
+        Err(error) => {
+            log::warn!("tray unavailable ({error}); closing will keep the window shown");
+            None
+        }
+    };
+    let tray_ok = tray.is_some();
+    {
+        let hidden = Arc::clone(&hidden);
+        ui.window().on_close_requested(move || {
+            if tray_ok {
+                hidden.store(true, Ordering::SeqCst);
+                log::info!("hidden to tray");
+            }
+            tray::close_response(tray_ok)
+        });
+    }
+    let show_window = {
+        let weak = ui.as_weak();
+        let hidden = Arc::clone(&hidden);
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                if let Err(error) = ui.window().show() {
+                    log::warn!("could not show window ({error})");
+                }
+                hidden.store(false, Ordering::SeqCst);
+            }
+        }
+    };
+    {
+        let show_window = show_window.clone();
+        restore::listen(move || {
+            let show_window = show_window.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                show_window();
+                log::info!("restored window (second launch)");
+            });
+        });
+    }
+    // Tray/menu events: muda delivers them on a global channel; poll it on
+    // the UI thread (the winit backend's own muda feature stays dormant).
+    let menu_timer = Timer::default();
+    {
+        let show_window = show_window.clone();
+        menu_timer.start(TimerMode::Repeated, Duration::from_millis(250), move || {
+            while let Ok(event) = muda::MenuEvent::receiver().try_recv() {
+                match event.id().0.as_str() {
+                    "show" => show_window(),
+                    "quit" => {
+                        log::info!("quitting (tray menu)");
+                        let _ = slint::quit_event_loop();
+                    }
+                    _ => {}
+                }
+            }
+        });
     }
 
     // ---- callbacks ----
@@ -915,14 +1008,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Once a second: the countdown text only. Recompute when it runs out.
+    // The tray lives in this closure so its tooltip rides the same tick —
+    // recomputed once per prayer change, never per tick. TrayIcon is !Send
+    // (Rc<RefCell> inside), so it must stay on the UI thread.
     let handle = ui.as_weak();
     let timer = Timer::default();
-    let initial_target = {
-        let guard = state.lock().unwrap();
-        let location = guard.location();
-        let (times, _) = day(&location, &guard.settings);
-        next_prayer(&times, &location, &guard.settings)
-    };
     let timer_state = Arc::clone(&state);
     let mut target = initial_target.map(|(_, at)| at);
     timer.start(TimerMode::Repeated, Duration::from_secs(1), move || {
@@ -941,9 +1031,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Some((prayer, at)) => {
                     ui.set_next_name(prayer.name_en().to_owned().into());
                     ui.set_next_name_ar(prayer.name_ar().to_owned().into());
+                    if let Some(tray) = &tray {
+                        let _ = tray.set_tooltip(Some(tray::tooltip_text(Some((
+                            prayer.name_en(),
+                            &hhmm(&location, at),
+                        )))));
+                    }
                     target = Some(at);
                 }
-                None => target = None,
+                None => {
+                    target = None;
+                    if let Some(tray) = &tray {
+                        let _ = tray.set_tooltip(Some(tray::tooltip_text(None)));
+                    }
+                }
             }
         }
         if let Some(at) = target {
@@ -1004,6 +1105,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn_scheduler(Arc::clone(&state), wake_rx, notice_tx);
 
     let banner_handle = ui.as_weak();
+    let banner_hidden = Arc::clone(&hidden);
     let mut shown_at: Option<std::time::Instant> = None;
     let banner_timer = Timer::default();
     banner_timer.start(TimerMode::Repeated, Duration::from_millis(500), move || {
@@ -1013,6 +1115,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         while let Ok(notice) = notice_rx.try_recv() {
             match notice {
                 Notice::Banner { title, body } => {
+                    // ADR 0002 condition 2: the banner is the correctness
+                    // floor — while hidden, restore + show the window first
+                    // so the alert is never invisible.
+                    if banner_hidden.swap(false, Ordering::SeqCst) {
+                        if let Err(error) = ui.window().show() {
+                            log::warn!("could not restore window for banner ({error})");
+                        }
+                        log::info!("restored window for alert banner");
+                    }
                     ui.set_banner_title(title.into());
                     ui.set_banner_body(body.into());
                     ui.set_banner_visible(true);
@@ -1027,6 +1138,51 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     });
+
+    // macOS: Slint's winit backend creates no default app menu, so Cmd+Q is
+    // inert without one. The muda app menu's Quit item shares the tray menu's
+    // "quit" id, so the same poll handles both.
+    #[cfg(target_os = "macos")]
+    let _app_menu = tray::macos_app_menu();
+
+    // Debug lifecycle hooks for the process-level regression test
+    // (tests/tray_lifecycle.rs): dispatch the REAL close event / the REAL quit
+    // call after N ms. Off by default, like the debug clock.
+    let mut debug_timers = Vec::new();
+    if let Some(ms) = std::env::var("TAWADU_DEBUG_AUTOCLOSE_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        let weak = ui.as_weak();
+        let timer = Timer::default();
+        timer.start(
+            TimerMode::SingleShot,
+            Duration::from_millis(ms),
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    log::info!("debug: dispatching CloseRequested");
+                    ui.window()
+                        .dispatch_event(slint::platform::WindowEvent::CloseRequested);
+                }
+            },
+        );
+        debug_timers.push(timer);
+    }
+    if let Some(ms) = std::env::var("TAWADU_DEBUG_AUTOQUIT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        let timer = Timer::default();
+        timer.start(
+            TimerMode::SingleShot,
+            Duration::from_millis(ms),
+            move || {
+                log::info!("debug: quitting event loop");
+                let _ = slint::quit_event_loop();
+            },
+        );
+        debug_timers.push(timer);
+    }
 
     ui.run()?;
     Ok(())
