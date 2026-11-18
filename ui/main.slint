@@ -2,9 +2,31 @@
 //
 // Rust owns all state. The interface reports edits back through the callbacks at
 // the bottom of MainWindow; nothing here persists anything by itself.
+//
+// Two rules this file follows, because both were visibly wrong once:
+//  - A Text inside a fixed-height Rectangle must set `height: parent.height`, or
+//    its `vertical-alignment` centres within the text and the glyphs sit high.
+//  - Arabic and Latin never share one `text:` string. The bidi algorithm then
+//    reorders the runs and the words come out of line. Each run gets its own Text.
 
-import { Palette } from "palette.slint";
 import { CityRow, MethodRow, OptionRow, Row } from "types.slint";
+
+// Design tokens — Plaster theme. Declared here (not in an imported file) so the
+// Rust side can reach the global and switch themes at runtime.
+export global Palette {
+    in property <color> bg: #F6F1E8;
+    in property <color> surface: #FFFDF8;
+    in property <color> surface-secondary: #EFE8DB;
+    in property <color> ink: #211C15;
+    in property <color> ink-muted: #6E665A;
+    in property <color> border: #E2D9C9;
+    in property <color> accent: #2E5C4E;
+    in property <color> accent-soft: #E3EEE9;
+    in property <color> accent-ink: #FFFFFF;
+    in property <color> gold: #B08A4A;
+    in property <length> radius: 16px;
+    in property <length> radius-small: 10px;
+}
 
 // A card with a small caps heading.
 component Section inherits VerticalLayout {
@@ -45,6 +67,7 @@ component Segmented inherits HorizontalLayout {
             font-size: 12px;
             color: selected == option.value ? Palette.accent : Palette.ink;
             width: parent.width;
+            height: parent.height;
             horizontal-alignment: center;
             vertical-alignment: center;
         }
@@ -79,6 +102,7 @@ component Stepper inherits HorizontalLayout {
             font-size: 16px;
             color: Palette.ink;
             width: parent.width;
+            height: parent.height;
             horizontal-alignment: center;
             vertical-alignment: center;
         }
@@ -107,6 +131,7 @@ component Stepper inherits HorizontalLayout {
             font-size: 16px;
             color: Palette.ink;
             width: parent.width;
+            height: parent.height;
             horizontal-alignment: center;
             vertical-alignment: center;
         }
@@ -133,12 +158,20 @@ component Action inherits Rectangle {
         font-weight: 600;
         color: primary ? Palette.accent-ink : Palette.ink;
         width: parent.width;
+        height: parent.height;
         horizontal-alignment: center;
         vertical-alignment: center;
     }
     TouchArea {
         clicked => { triggered(); }
     }
+}
+
+// A run of text inside a layout row: the layout stretches it, so centring the
+// glyphs is enough. (Inside a fixed-height Rectangle, set `height: parent.height`
+// on the Text itself — that is what Segmented, Stepper and Action do.)
+component RowText inherits Text {
+    vertical-alignment: center;
 }
 
 export component MainWindow inherits Window {
@@ -163,7 +196,8 @@ export component MainWindow inherits Window {
     in property <[Row]> rows;
 
     // ---- settings ----
-    in property <string> settings_location;
+    in property <string> settings_location_name;
+    in property <string> settings_location_name_ar;
     in-out property <string> location_query;
     in property <[CityRow]> city_results;
     in property <[MethodRow]> methods_left;
@@ -216,10 +250,23 @@ export component MainWindow inherits Window {
                     font-weight: 600;
                     color: Palette.ink;
                 }
-                Text {
-                    text: location_name + " · " + location_name_ar + "   ·   " + hijri_date;
-                    font-size: 13px;
-                    color: Palette.ink-muted;
+                HorizontalLayout {
+                    spacing: 6px;
+                    RowText {
+                        text: location_name;
+                        font-size: 13px;
+                        color: Palette.ink-muted;
+                    }
+                    RowText {
+                        text: location_name_ar;
+                        font-size: 13px;
+                        color: Palette.ink-muted;
+                    }
+                    RowText {
+                        text: hijri_date;
+                        font-size: 13px;
+                        color: Palette.ink-muted;
+                    }
                 }
             }
             Rectangle { }
@@ -344,14 +391,14 @@ export component MainWindow inherits Window {
                         HorizontalLayout {
                             padding: 10px;
                             spacing: 8px;
-                            Text {
+                            RowText {
                                 text: row.name;
                                 font-size: 15px;
                                 font-weight: row.is_prayer ? 600 : 400;
                                 color: row.is_prayer ? Palette.ink : Palette.ink-muted;
                             }
                             Rectangle { }
-                            Text {
+                            RowText {
                                 text: row.time;
                                 font-size: 15px;
                                 font-weight: 500;
@@ -378,11 +425,20 @@ export component MainWindow inherits Window {
                     border-width: 1px;
                     border-radius: Palette.radius;
                     Section { title: "LOCATION";
-                        Text {
-                            text: settings_location;
-                            font-size: 16px;
-                            font-weight: 600;
-                            color: Palette.accent;
+                        HorizontalLayout {
+                            spacing: 6px;
+                            RowText {
+                                text: settings_location_name;
+                                font-size: 16px;
+                                font-weight: 600;
+                                color: Palette.accent;
+                            }
+                            RowText {
+                                text: settings_location_name_ar;
+                                font-size: 16px;
+                                font-weight: 600;
+                                color: Palette.accent;
+                            }
                         }
                         HorizontalLayout {
                             spacing: 8px;
@@ -403,12 +459,24 @@ export component MainWindow inherits Window {
                             height: 28px;
                             background: Palette.surface-secondary;
                             border-radius: Palette.radius-small;
-                            Text {
-                                text: city.name + " · " + city.name_ar + "   " + city.country;
-                                font-size: 12px;
-                                color: Palette.ink;
-                                width: parent.width;
-                                vertical-alignment: center;
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                spacing: 6px;
+                                RowText {
+                                    text: city.name;
+                                    font-size: 12px;
+                                    color: Palette.ink;
+                                }
+                                RowText {
+                                    text: city.name_ar;
+                                    font-size: 12px;
+                                    color: Palette.ink-muted;
+                                }
+                                RowText {
+                                    text: city.country;
+                                    font-size: 11px;
+                                    color: Palette.ink-muted;
+                                }
                             }
                             TouchArea {
                                 clicked => { select-city(city.name); }
@@ -474,14 +542,21 @@ export component MainWindow inherits Window {
                                 spacing: 2px;
                                 for method in methods_left : Rectangle {
                                     height: 24px;
-                                    background: selected_method == method.key ? Palette.accent-soft : Palette.surface;
+                                    background: selected_method == method.key ? Palette.accent-soft : Palette.surface-secondary;
                                     border-radius: Palette.radius-small;
-                                    Text {
-                                        text: method.label + " · " + method.label_ar;
-                                        font-size: 12px;
-                                        color: selected_method == method.key ? Palette.accent : Palette.ink;
-                                        width: parent.width;
-                                        vertical-alignment: center;
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        spacing: 6px;
+                                        RowText {
+                                            text: method.label;
+                                            font-size: 12px;
+                                            color: selected_method == method.key ? Palette.accent : Palette.ink;
+                                        }
+                                        RowText {
+                                            text: method.label_ar;
+                                            font-size: 12px;
+                                            color: selected_method == method.key ? Palette.accent : Palette.ink-muted;
+                                        }
                                     }
                                     TouchArea {
                                         clicked => { set-method(method.key); }
@@ -492,14 +567,21 @@ export component MainWindow inherits Window {
                                 spacing: 2px;
                                 for method in methods_right : Rectangle {
                                     height: 24px;
-                                    background: selected_method == method.key ? Palette.accent-soft : Palette.surface;
+                                    background: selected_method == method.key ? Palette.accent-soft : Palette.surface-secondary;
                                     border-radius: Palette.radius-small;
-                                    Text {
-                                        text: method.label + " · " + method.label_ar;
-                                        font-size: 12px;
-                                        color: selected_method == method.key ? Palette.accent : Palette.ink;
-                                        width: parent.width;
-                                        vertical-alignment: center;
+                                    HorizontalLayout {
+                                        padding-left: 8px;
+                                        spacing: 6px;
+                                        RowText {
+                                            text: method.label;
+                                            font-size: 12px;
+                                            color: selected_method == method.key ? Palette.accent : Palette.ink;
+                                        }
+                                        RowText {
+                                            text: method.label_ar;
+                                            font-size: 12px;
+                                            color: selected_method == method.key ? Palette.accent : Palette.ink-muted;
+                                        }
                                     }
                                     TouchArea {
                                         clicked => { set-method(method.key); }

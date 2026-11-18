@@ -65,6 +65,96 @@ fn option_list(pairs: &[(&str, &str)]) -> Vec<OptionRow> {
         .collect()
 }
 
+/// One theme's tokens, from `design/brand.md`.
+struct ThemeColors {
+    bg: (u8, u8, u8),
+    surface: (u8, u8, u8),
+    surface_secondary: (u8, u8, u8),
+    ink: (u8, u8, u8),
+    ink_muted: (u8, u8, u8),
+    border: (u8, u8, u8),
+    accent: (u8, u8, u8),
+    accent_soft: (u8, u8, u8),
+    accent_ink: (u8, u8, u8),
+    gold: (u8, u8, u8),
+}
+
+fn colors(theme: Theme) -> ThemeColors {
+    match theme {
+        Theme::Plaster => ThemeColors {
+            bg: (0xF6, 0xF1, 0xE8),
+            surface: (0xFF, 0xFD, 0xF8),
+            surface_secondary: (0xEF, 0xE8, 0xDB),
+            ink: (0x21, 0x1C, 0x15),
+            ink_muted: (0x6E, 0x66, 0x5A),
+            border: (0xE2, 0xD9, 0xC9),
+            accent: (0x2E, 0x5C, 0x4E),
+            accent_soft: (0xE3, 0xEE, 0xE9),
+            accent_ink: (0xFF, 0xFF, 0xFF),
+            gold: (0xB0, 0x8A, 0x4A),
+        },
+        Theme::Ink => ThemeColors {
+            bg: (0x14, 0x11, 0x0D),
+            surface: (0x1D, 0x19, 0x15),
+            surface_secondary: (0x27, 0x22, 0x1C),
+            ink: (0xEF, 0xE7, 0xDA),
+            ink_muted: (0xB0, 0xA6, 0x97),
+            border: (0x33, 0x2C, 0x24),
+            accent: (0x8F, 0xC3, 0xAE),
+            accent_soft: (0x24, 0x35, 0x2E),
+            accent_ink: (0x0F, 0x1A, 0x15),
+            gold: (0xD0, 0xA4, 0x5C),
+        },
+        Theme::Ramadan => ThemeColors {
+            bg: (0x17, 0x12, 0x09),
+            surface: (0x22, 0x1A, 0x10),
+            surface_secondary: (0x2C, 0x22, 0x14),
+            ink: (0xF3, 0xE7, 0xD3),
+            ink_muted: (0xC2, 0xB3, 0x99),
+            border: (0x3A, 0x2E, 0x1C),
+            accent: (0xD9, 0xA4, 0x41),
+            accent_soft: (0x33, 0x27, 0x0F),
+            accent_ink: (0x1A, 0x12, 0x06),
+            gold: (0xD0, 0xA4, 0x5C),
+        },
+    }
+}
+
+/// Push a theme into the `Palette` global. The global is declared in `main.slint`
+/// rather than an imported file precisely so the Rust side can reach it — an
+/// imported global gets inlined and cannot be set at runtime.
+fn apply_theme(ui: &MainWindow, theme: Theme) {
+    use slint::Color;
+    let c = colors(theme);
+    let palette = ui.global::<Palette>();
+    palette.set_bg(Color::from_rgb_u8(c.bg.0, c.bg.1, c.bg.2));
+    palette.set_surface(Color::from_rgb_u8(c.surface.0, c.surface.1, c.surface.2));
+    palette.set_surface_secondary(Color::from_rgb_u8(
+        c.surface_secondary.0,
+        c.surface_secondary.1,
+        c.surface_secondary.2,
+    ));
+    palette.set_ink(Color::from_rgb_u8(c.ink.0, c.ink.1, c.ink.2));
+    palette.set_ink_muted(Color::from_rgb_u8(
+        c.ink_muted.0,
+        c.ink_muted.1,
+        c.ink_muted.2,
+    ));
+    palette.set_border(Color::from_rgb_u8(c.border.0, c.border.1, c.border.2));
+    palette.set_accent(Color::from_rgb_u8(c.accent.0, c.accent.1, c.accent.2));
+    palette.set_accent_soft(Color::from_rgb_u8(
+        c.accent_soft.0,
+        c.accent_soft.1,
+        c.accent_soft.2,
+    ));
+    palette.set_accent_ink(Color::from_rgb_u8(
+        c.accent_ink.0,
+        c.accent_ink.1,
+        c.accent_ink.2,
+    ));
+    palette.set_gold(Color::from_rgb_u8(c.gold.0, c.gold.1, c.gold.2));
+}
+
 fn city_rows(query: &str) -> Vec<CityRow> {
     let needle = query.trim().to_ascii_lowercase();
     if needle.is_empty() {
@@ -151,7 +241,7 @@ fn apply_home(ui: &MainWindow, state: &AppState) {
     ui.set_location_name(location.name.clone().into());
     ui.set_location_name_ar(location.name_ar.clone().into());
     let hijri = from_gregorian(location.local(now).date_naive())
-        .map(|h| format!("{} {} {} AH", h.day, h.month_name_ar(), h.year))
+        .map(|h| format!("{} {} {} هـ", h.day, h.month_name_ar(), h.year))
         .unwrap_or_default();
     ui.set_hijri_date(hijri.into());
 
@@ -223,7 +313,8 @@ fn apply_settings(ui: &MainWindow, state: &AppState) {
     let settings = &state.settings;
     let location = state.location();
 
-    ui.set_settings_location(format!("{} · {}", location.name, location.name_ar).into());
+    ui.set_settings_location_name(location.name.clone().into());
+    ui.set_settings_location_name_ar(location.name_ar.clone().into());
     ui.set_location_query(location.name.clone().into());
     ui.set_city_results(ModelRc::new(VecModel::from(Vec::<CityRow>::new())));
 
@@ -356,6 +447,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }));
 
     let ui = MainWindow::new()?;
+    apply_theme(&ui, state.lock().unwrap().settings.theme);
     apply_home(&ui, &state.lock().unwrap());
     apply_settings(&ui, &state.lock().unwrap());
 
@@ -471,6 +563,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 state.settings.theme = theme;
             }
             if let Some(ui) = weak.upgrade() {
+                apply_theme(&ui, state.settings.theme);
                 apply_settings(&ui, &state);
             }
         });
