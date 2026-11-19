@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Manual re-trigger (workflow_dispatch): covers dropped pull_request events
+  # (e.g. branch push and PR creation racing within seconds — seen on PR #2,
+  # 2026-11-19: 18+ min without a run) and lets Atlas re-run CI on any ref.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
