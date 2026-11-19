@@ -66,6 +66,8 @@
 
 ## Open debt / follow-ups
 
+- **PR #2 gate + merge: Atlas personally, GUI window 02:10–02:25 UTC (announced in PR comments). Heartbeat: monitor only — do NOT gate/merge PR #2 or taskkill during Atlas's window.** After merge: delete rescue/team-main-20261119 + Atlas worktree, dispatch Phase 3 to Forge.
+
 - **Tray pixel check** (cosmetic): icon registration + full functional path verified; literal taskbar screenshot pending (taskbar auto-hidden during test; do it when naturally visible).
 - Restore-channel hardening (Windows DACL), zbus 5.19+6.3 lock duplication comment, restore-test listener leaks, restore-bind race window.
 - Phase 6: gold #B08A4A unused + Today-panel tint undocumented; banner i18n; now-clock display.
