@@ -503,6 +503,14 @@ component VoiceRow inherits Rectangle {
 // The master volume slider with a FILLED track (Prism's polish note: the
 // fill is the value affordance). Thumb 16 px, track 4 px, drag math in the
 // TouchArea; 0–100.
+//
+// GEOMETRY CONTRACT (D1 fix — do not regress): fill end == knob center ==
+// pointer position, for EVERY value. Knob travel is (W − 16px), knob center
+// is (W − 16px)·r + 8px; the fill must span exactly that far, and pointer→
+// value must map over the same travel (offset 8px), not the full width.
+// Slint 1.19's default_geometry pass CENTERS any non-layout element whose
+// x/y is unbound and size ≠ 100% (x = (parent − self)/2) — the fill needs
+// explicit x: 0px; y: 0px or it anchors to the track center, not the left.
 component AudioSlider inherits Rectangle {
     in property <int> value;
     in property <int> min-value: 0;
@@ -516,8 +524,11 @@ component AudioSlider inherits Rectangle {
         background: Palette.surface-secondary;
         border-radius: 2px;
         Rectangle {
+            x: 0px;
+            y: 0px;
             height: 4px;
-            width: parent.width * (value - min-value) / (max-value - min-value);
+            // Ends exactly at the knob center: (W − 16)·r + 8.
+            width: (parent.width - 16px) * (value - min-value) / (max-value - min-value) + 8px;
             background: Palette.accent;
             border-radius: 2px;
         }
@@ -534,11 +545,11 @@ component AudioSlider inherits Rectangle {
     }
     TouchArea {
         clicked => {
-            changed(Math.max(min-value, Math.min(max-value, min-value + Math.round((self.mouse-x / parent.width) * (max-value - min-value)))));
+            changed(Math.max(min-value, Math.min(max-value, min-value + Math.round(((self.mouse-x - 8px) / (parent.width - 16px)) * (max-value - min-value)))));
         }
         moved => {
             if (self.pressed) {
-                changed(Math.max(min-value, Math.min(max-value, min-value + Math.round((self.mouse-x / parent.width) * (max-value - min-value)))));
+                changed(Math.max(min-value, Math.min(max-value, min-value + Math.round(((self.mouse-x - 8px) / (parent.width - 16px)) * (max-value - min-value)))));
             }
         }
     }
