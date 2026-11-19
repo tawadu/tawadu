@@ -72,3 +72,24 @@ export struct CreditRow {
     license: string,
     role: string,
 }
+
+// ---- athkar (Phase 4: real corpus, real progress) ----
+
+export struct AthkarItemView {
+    category: int,
+    item-id: int,
+    arabic: string,          // primary, RTL
+    translation: string,     // "" when the corpus has none — never invented
+    transliteration: string, // "" when absent (sparse in the pinned corpus)
+    reference: string,       // Hisn al-Muslim · category · #item
+    counter: string,         // "done/target" — the honest tasbih
+    done: int,
+    count: int,
+    complete: bool,
+}
+
+export struct ContextChip {
+    key: string,
+    label: string,
+    active: bool,
+}

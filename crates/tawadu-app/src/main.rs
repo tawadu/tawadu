@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, NaiveTime, Utc};
 use slint::{ModelRc, SharedString, Timer, TimerMode, VecModel};
+use tawadu_core::athkar::{self, Context, ContextTimes, Corpus};
 use tawadu_core::hijri::from_gregorian;
 use tawadu_core::locations::{find_city, Location, CITIES};
 use tawadu_core::notify::{self, NotificationKind};
@@ -102,6 +103,17 @@ impl SaveDebounce {
 }
 
 /// Everything the interface can change, plus where it is kept.
+/// Athkar UI state (Phase 4). RefCell for the same reason as debounce:
+/// apply_home takes &AppState; the AppState Mutex serializes access.
+struct AthkarUi {
+    ctx: Context,
+    loaded_ctx: Option<Context>,
+    manual: bool,
+    day: String,
+    done: std::collections::HashMap<(u32, u32), u32>,
+    dirty: bool,
+}
+
 struct AppState {
     settings: Settings,
     storage: Option<Storage>,
@@ -116,6 +128,10 @@ struct AppState {
     library: Option<Arc<Mutex<PackLibrary>>>,
     /// The background playback engine (fail-soft when no audio device).
     engine: Option<AudioEngine>,
+    /// Bundled athkar corpus (Phase 4). None only if parsing fails (logged).
+    corpus: Option<Corpus>,
+    /// Athkar context/progress UI state.
+    athkar: std::cell::RefCell<AthkarUi>,
 }
 
 /// Decode a serde snake_case key back into a config value.
@@ -351,10 +367,8 @@ fn apply_home(ui: &MainWindow, state: &AppState) {
         .unwrap_or_else(|| "Set your mosque's iqamah offsets".to_string());
     ui.set_next_iqamah(iqamah_text.into());
 
-    // A real dhikr from Hisn al-Muslim, shown statically until the athkar engine
-    // lands (Phase 4). It deliberately carries no progress counter: a count next
-    // to "one hundred times" that invents its own number is a visible lie.
-    ui.set_athkar_text("سُبْحَانَ اللَّهِ وَبِحَمْدِهِ · مِائَةَ مَرَّةٍ".into());
+    // Phase 4: the real athkar engine — context-aware card, honest progress.
+    apply_athkar(ui, state, &location, &times);
 
     let order = [
         Prayer::Fajr,
@@ -395,6 +409,114 @@ fn row(name: &str, name_ar: &str, time: String, is_next: bool, is_prayer: bool) 
 }
 
 /// Push the settings into the settings surface.
+/// Reload day-scoped progress for the displayed context (honest reset on a
+/// new day or context change — yesterday's reads are never today's counts).
+fn athkar_reload(state: &AppState, a: &mut AthkarUi) {
+    a.done = state
+        .storage
+        .as_ref()
+        .and_then(|s| s.athkar_progress(a.ctx.key(), &a.day).ok())
+        .unwrap_or_default();
+    a.loaded_ctx = Some(a.ctx);
+    a.dirty = true;
+}
+
+/// Context-aware athkar card + view refresh (runs on the 1 s home tick).
+/// Auto mode follows the prayer-window context; a manual pick overrides
+/// until the user taps Auto. Progress is always the persisted truth.
+fn apply_athkar(ui: &MainWindow, state: &AppState, location: &Location, times: &PrayerTimes) {
+    let Some(corpus) = &state.corpus else {
+        return;
+    };
+    let local = location.local(now());
+    let day = local.format("%Y-%m-%d").to_string();
+    let mut a = state.athkar.borrow_mut();
+    if !a.manual {
+        if let (Some(f), Some(d), Some(asr), Some(i)) =
+            (times.fajr, times.dhuhr, times.asr, times.isha)
+        {
+            let ct = ContextTimes {
+                fajr: location.local(f).time(),
+                dhuhr: location.local(d).time(),
+                asr: location.local(asr).time(),
+                isha: location.local(i).time(),
+            };
+            a.ctx = athkar::active_context(local.time(), &ct);
+        }
+    }
+    if a.day != day || a.loaded_ctx != Some(a.ctx) {
+        a.day = day;
+        athkar_reload(state, &mut a);
+    }
+    // Card: the first UNREAD item of the context (else the first item).
+    let mut current: Option<&athkar::Item> = None;
+    let mut first: Option<&athkar::Item> = None;
+    for id in a.ctx.category_ids() {
+        if let Some(cat) = corpus.category(*id) {
+            for item in &cat.items {
+                if first.is_none() {
+                    first = Some(item);
+                }
+                let done = a.done.get(&(cat.id, item.id)).copied().unwrap_or(0);
+                if done < item.count && current.is_none() {
+                    current = Some(item);
+                }
+            }
+        }
+    }
+    let (items_total, _) = athkar::context_totals(corpus, a.ctx);
+    let (items_done, _) = athkar::context_done(corpus, a.ctx, &a.done);
+    ui.set_athkar_label(a.ctx.label().into());
+    ui.set_athkar_progress(format!("{items_done}/{items_total}").into());
+    ui.set_athkar_auto(!a.manual);
+    ui.set_athkar_text(
+        current
+            .or(first)
+            .map(|i| i.arabic.clone())
+            .unwrap_or_default()
+            .into(),
+    );
+    if ui.get_page() == "athkar" && a.dirty {
+        build_athkar_view(ui, corpus, &a);
+        a.dirty = false;
+    }
+}
+
+/// Rebuild the athkar view model from the corpus + persisted progress.
+fn build_athkar_view(ui: &MainWindow, corpus: &Corpus, a: &AthkarUi) {
+    let mut items = Vec::new();
+    for id in a.ctx.category_ids() {
+        if let Some(cat) = corpus.category(*id) {
+            for item in &cat.items {
+                let done = a.done.get(&(cat.id, item.id)).copied().unwrap_or(0);
+                items.push(AthkarItemView {
+                    category: cat.id as i32,
+                    item_id: item.id as i32,
+                    arabic: item.arabic.clone().into(),
+                    translation: item.translation.clone().unwrap_or_default().into(),
+                    transliteration: item.transliteration.clone().unwrap_or_default().into(),
+                    reference: cat.reference(item.id).into(),
+                    counter: format!("{done}/{}", item.count).into(),
+                    done: done as i32,
+                    count: item.count as i32,
+                    complete: done >= item.count,
+                });
+            }
+        }
+    }
+    ui.set_athkar_items(ModelRc::new(VecModel::from(items)));
+    let chips: Vec<ContextChip> = Context::ALL
+        .iter()
+        .map(|c| ContextChip {
+            key: c.key().into(),
+            label: c.label().into(),
+            active: *c == a.ctx,
+        })
+        .collect();
+    ui.set_athkar_contexts(ModelRc::new(VecModel::from(chips)));
+    ui.set_athkar_context_key(a.ctx.key().into());
+}
+
 fn apply_settings(ui: &MainWindow, state: &AppState) {
     let settings = &state.settings;
     let location = state.location();
@@ -1360,6 +1482,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         debounce: std::cell::RefCell::new(SaveDebounce::new(Duration::from_millis(800))),
         library,
         engine,
+        corpus: match Corpus::bundled() {
+            Ok(corpus) => Some(corpus),
+            Err(e) => {
+                log::error!("athkar corpus unavailable: {e}");
+                None
+            }
+        },
+        athkar: std::cell::RefCell::new(AthkarUi {
+            ctx: Context::Morning,
+            loaded_ctx: None,
+            manual: false,
+            day: String::new(),
+            done: std::collections::HashMap::new(),
+            dirty: true,
+        }),
     }));
 
     let (wake_tx, wake_rx) = mpsc::channel::<()>();
@@ -1505,6 +1642,111 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_close_settings(move || {
             if let Some(ui) = weak.upgrade() {
                 ui.set_page("home".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_open_athkar(move || {
+            if let Some(ui) = weak.upgrade() {
+                let s = state.lock().unwrap();
+                s.athkar.borrow_mut().dirty = true;
+                ui.set_page("athkar".into());
+                apply_home(&ui, &s);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_close_athkar(move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_page("home".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_athkar_switch_context(move |key| {
+            if let Some(ui) = weak.upgrade() {
+                let s = state.lock().unwrap();
+                if let Some(ctx) = Context::from_key(&key) {
+                    let mut a = s.athkar.borrow_mut();
+                    a.manual = true;
+                    a.ctx = ctx;
+                    athkar_reload(&s, &mut a);
+                    drop(a);
+                    apply_home(&ui, &s);
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_athkar_follow_window(move || {
+            if let Some(ui) = weak.upgrade() {
+                let s = state.lock().unwrap();
+                let mut a = s.athkar.borrow_mut();
+                a.manual = false;
+                a.loaded_ctx = None;
+                drop(a);
+                apply_home(&ui, &s);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_athkar_repeat(move |category, item| {
+            if let Some(ui) = weak.upgrade() {
+                let s = state.lock().unwrap();
+                let target = s
+                    .corpus
+                    .as_ref()
+                    .and_then(|c| c.category(category as u32))
+                    .and_then(|cat| cat.items.iter().find(|i| i.id == item as u32))
+                    .map(|i| i.count);
+                if let Some(target) = target {
+                    let mut a = s.athkar.borrow_mut();
+                    if let Some(storage) = &s.storage {
+                        match storage.record_athkar_repeat(
+                            a.ctx.key(),
+                            category as u32,
+                            item as u32,
+                            &a.day,
+                            target,
+                        ) {
+                            Ok(done) => {
+                                a.done.insert((category as u32, item as u32), done);
+                                a.dirty = true;
+                            }
+                            Err(e) => log::error!("athkar repeat write failed: {e}"),
+                        }
+                    }
+                    drop(a);
+                    apply_home(&ui, &s);
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_athkar_reset(move || {
+            if let Some(ui) = weak.upgrade() {
+                let s = state.lock().unwrap();
+                let mut a = s.athkar.borrow_mut();
+                if let Some(storage) = &s.storage {
+                    if let Err(e) = storage.reset_athkar_context(a.ctx.key(), &a.day) {
+                        log::error!("athkar reset failed: {e}");
+                    }
+                }
+                a.done.clear();
+                a.dirty = true;
+                drop(a);
+                apply_home(&ui, &s);
             }
         });
     }
