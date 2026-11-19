@@ -489,20 +489,30 @@ fn tray_lifecycle() {
             ("TAWADU_DEBUG_AUTOCLOSE_MS", "2600"),
         ],
     );
-    assert!(
-        wait_for_log(&log, "hidden to tray", Duration::from_secs(20)),
-        "app must hide to tray; logs:\n{}",
-        log.lock().unwrap()
+    // Branch on tray availability: without an SNI watcher (CI xvfb) the
+    // app correctly keeps the window shown on close — there is no hide to
+    // flush, and the quit-flush durability above already covers that path.
+    let hide_or_fallback = wait_for_either(
+        &log,
+        "hidden to tray",
+        "tray unavailable",
+        Duration::from_secs(20),
     );
-    let _ = hider.kill();
-    let _ = hider.wait();
-    let storage = tawadu_core::storage::Storage::open(&db_path(&home))
-        .expect("settings DB must exist after the hide flush");
-    match storage.load_settings() {
-        tawadu_core::storage::LoadOutcome::Loaded(s) => assert_eq!(
-            s.pre_alert_minutes, 15,
-            "the trailing debounced write must survive hide-then-kill"
-        ),
-        _ => panic!("settings must be persisted by the hide flush"),
+    if hide_or_fallback == Some(0) {
+        let _ = hider.kill();
+        let _ = hider.wait();
+        let storage = tawadu_core::storage::Storage::open(&db_path(&home))
+            .expect("settings DB must exist after the hide flush");
+        match storage.load_settings() {
+            tawadu_core::storage::LoadOutcome::Loaded(s) => assert_eq!(
+                s.pre_alert_minutes, 15,
+                "the trailing debounced write must survive hide-then-kill"
+            ),
+            _ => panic!("settings must be persisted by the hide flush"),
+        }
+    } else {
+        assert_eq!(hide_or_fallback, Some(1), "neither tray path ran");
+        let _ = hider.kill();
+        let _ = hider.wait();
     }
 }
