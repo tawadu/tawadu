@@ -6,6 +6,7 @@
 //! Rust owns all state. The interface reports edits back through callbacks and
 //! nothing in `.slint` persists anything by itself.
 
+mod autostart;
 mod cli;
 mod restore;
 mod tray;
@@ -392,6 +393,7 @@ fn apply_settings(ui: &MainWindow, state: &AppState) {
     ui.set_notif_athkar(n.athkar);
     ui.set_notif_system(n.system);
     ui.set_quiet_hours_enabled(n.quiet_hours_enabled);
+    ui.set_start_at_login(settings.start_at_login);
     ui.set_quiet_from(n.quiet_from.format("%H:%M").to_string().into());
     ui.set_quiet_to(n.quiet_to.format("%H:%M").to_string().into());
     ui.set_location_query(location.name.clone().into());
@@ -829,6 +831,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (wake_tx, wake_rx) = mpsc::channel::<()>();
     state.lock().unwrap().wake = Some(Arc::new(wake_tx));
 
+    // Opt-in autostart: reconcile the registration against the setting on
+    // every launch (on-but-missing → register; off-but-stale → unregister).
+    autostart::reconcile_at_startup(state.lock().unwrap().settings.start_at_login);
+
     let ui = MainWindow::new()?;
     // ADR 0002: hide() drops the window's keepalive; without this held
     // KeepAlive the event loop would quit on the first close-to-tray. The
@@ -1194,6 +1200,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_set_quiet_enabled(move |on: bool| {
             let mut state = state.lock().unwrap();
             state.settings.notifications.quiet_hours_enabled = on;
+            if let Some(ui) = weak.upgrade() {
+                apply_settings(&ui, &state);
+                state.changed();
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_set_start_at_login(move |on: bool| {
+            let mut state = state.lock().unwrap();
+            state.settings.start_at_login = on;
+            // Apply the registration immediately; the flag itself persists
+            // through the debounced save-on-change like every other setting.
+            autostart::set(on);
             if let Some(ui) = weak.upgrade() {
                 apply_settings(&ui, &state);
                 state.changed();
