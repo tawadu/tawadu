@@ -886,6 +886,32 @@ fn preview_duration_ms(plan: &PlaybackPlan, packs: &[InstalledPack]) -> Option<u
     }
 }
 
+/// Drop every settings reference to a removed pack (Sentinel N3): a
+/// re-import landing on the same slug id must not resurrect a stale
+/// assignment. Returns true when anything referenced the pack — the
+/// remove handler's "assigned events fall back" status condition.
+fn forget_removed_pack(audio: &mut AudioSettings, id: &str) -> bool {
+    let mut affected = audio.default_pack.as_deref() == Some(id);
+    if affected {
+        audio.default_pack = None;
+    }
+    audio.event_voices.retain(|_, voice| {
+        let references = voice.pack.as_deref() == Some(id);
+        affected |= references;
+        !references
+    });
+    affected
+}
+
+/// The remove handler's status line (Prism §3: never silent).
+fn remove_status(name: &str, affected: bool) -> String {
+    if affected {
+        format!("Removed {name}. Assigned events fall back to the default voice.")
+    } else {
+        format!("Removed {name}.")
+    }
+}
+
 impl AppState {
     fn location(&self) -> Location {
         find_city(&self.settings.location.name).unwrap_or_else(|| self.settings.location.resolve())
@@ -1884,20 +1910,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(true) => {
                     let name = name.unwrap_or_else(|| id.to_string());
                     // Never silent: assigned events fall back (routing),
-                    // and the status line says so (Prism §3).
-                    let affected = state.settings.audio.default_pack.as_deref()
-                        == Some(id.as_str())
-                        || state
-                            .settings
-                            .audio
-                            .event_voices
-                            .values()
-                            .any(|voice| voice.pack.as_deref() == Some(id.as_str()));
-                    state.status = if affected {
-                        format!("Removed {name}. Assigned events fall back to the default voice.")
-                    } else {
-                        format!("Removed {name}.")
-                    };
+                    // and the status line says so (Prism §3). The stale
+                    // references are dropped here so a re-import on the
+                    // same slug id cannot resurrect them (Sentinel N3);
+                    // `changed()` below persists the cleanup.
+                    let affected = forget_removed_pack(&mut state.settings.audio, id.as_str());
+                    state.status = remove_status(&name, affected);
                     if ui.get_previewing_pack_id() == id {
                         if let Some(engine) = &state.engine {
                             engine.stop();
@@ -2426,6 +2444,79 @@ mod tests {
         let rows = event_voice_rows(&packs, &audio);
         assert_eq!(rows[0].voice_label.as_str(), "Default");
         assert_eq!(rows[0].voice_id.as_str(), "");
+    }
+
+    #[test]
+    fn removing_a_pack_drops_its_settings_references() {
+        // Sentinel N3: a re-import landing on the same slug id must not
+        // resurrect a stale assignment — removal cleans both fields.
+        let mut audio = AudioSettings {
+            default_pack: Some("gone".into()),
+            ..AudioSettings::default()
+        };
+        audio.event_voices.insert(
+            "athan".into(),
+            EventVoice {
+                pack: Some("gone".into()),
+                mode_override: None,
+            },
+        );
+        audio.event_voices.insert(
+            "iqamah".into(),
+            EventVoice {
+                pack: Some("gone".into()),
+                mode_override: Some(PlaybackMode::Shuffle),
+            },
+        );
+        audio.event_voices.insert(
+            "athkar".into(),
+            EventVoice {
+                pack: Some("keep".into()),
+                mode_override: None,
+            },
+        );
+        audio.event_voices.insert(
+            "chime".into(),
+            EventVoice {
+                pack: None,
+                mode_override: Some(PlaybackMode::Sequential),
+            },
+        );
+
+        // References existed → the "assigned events fall back" branch.
+        assert!(forget_removed_pack(&mut audio, "gone"));
+        assert_eq!(audio.default_pack, None);
+        assert!(!audio.event_voices.contains_key("athan"));
+        assert!(!audio.event_voices.contains_key("iqamah"));
+        assert!(audio
+            .event_voices
+            .values()
+            .all(|voice| voice.pack.as_deref() != Some("gone")));
+        // Unrelated choices survive untouched (incl. a Default + override).
+        assert_eq!(audio.event_voices["athkar"].pack.as_deref(), Some("keep"));
+        assert_eq!(
+            audio.event_voices["chime"].mode_override,
+            Some(PlaybackMode::Sequential)
+        );
+
+        // The fallback still behaves: routing resolves to the remaining
+        // pack and the UI row reports Default honestly.
+        let packs = [ui_pack("keep", None, Some(1000))];
+        match routing::resolve_voice(routing::EVENT_ATHAN, &audio, &packs) {
+            Some(ResolvedVoice::Pack { pack, .. }) => assert_eq!(pack.id, "keep"),
+            other => panic!("expected fallback to the remaining pack, got {other:?}"),
+        }
+        let rows = event_voice_rows(&packs, &audio);
+        assert_eq!(rows[0].voice_label.as_str(), "Default");
+        assert_eq!(rows[0].voice_id.as_str(), "");
+
+        // Nothing left to drop → the plain "Removed {name}." branch.
+        assert!(!forget_removed_pack(&mut audio, "gone"));
+        assert_eq!(
+            remove_status("Gone Pack", true),
+            "Removed Gone Pack. Assigned events fall back to the default voice."
+        );
+        assert_eq!(remove_status("Gone Pack", false), "Removed Gone Pack.");
     }
 
     #[test]
