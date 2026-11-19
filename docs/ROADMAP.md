@@ -273,9 +273,10 @@ converged on the ordering above and caught real defects:
 - **Fixed:** yesterday's timeline was discarded at local midnight, dropping a late
   Isha iqamah or sleep-athkar window in high-latitude locations.
 - **Open:** no fired-event ledger, so a restart within 120 s re-announces an event.
-- **Open:** quiet hours are evaluated at fire time rather than event time, so a
-  late event after wake is judged against the wrong wall clock.
-- **Open:** settings save only on the حفظ button, while Phase 1 specifies a
-  debounced save-on-change. Code and doc now disagree; pick one.
+- **Resolved (Steps 2–3):** quiet hours are evaluated at EVENT time; the athan
+  stays essential and is never suppressed.
+- **Resolved (Steps 2–3):** settings now save debounced on change (800 ms after
+  the last mutation, drained on a 200 ms UI tick); حفظ remains an immediate
+  save that cancels any pending debounce write. Code and doc agree.
 - **Note:** `notify-rust` returning `Ok` is not proof a toast appeared — on an
   unpackaged Windows exe it needs an AUMID. The banner is the correctness floor.

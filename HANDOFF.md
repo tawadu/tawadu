@@ -217,8 +217,11 @@ fires the athan and iqamah while correctly dropping the stale pre-alert.
 5. **No fired-event ledger** — a restart within 120 s of an event re-announces it.
 6. **Quiet hours are evaluated at fire time, not event time**, so a late event after
    wake is judged against the wrong wall clock.
-7. **Settings save only on the حفظ button**, while Phase 1 specifies a debounced
-   save-on-change. **Code and doc disagree — pick one.**
+7. ~~**Settings save only on the حفظ button**, while Phase 1 specifies a debounced
+   save-on-change. **Code and doc disagree — pick one.**~~ **RESOLVED (Steps 2–3):**
+   debounced save-on-change implemented — 800 ms after the last mutation
+   (drained on a 200 ms UI tick), حفظ remains an immediate save that cancels
+   any pending debounce write.
 8. **No autostart.** `start_at_login` exists in `Settings` but nothing reads it.
 
 ### Debt and unknowns
@@ -287,8 +290,9 @@ and surface a switch in APPEARANCE.
 - A **fired-event ledger** (persist the last fired `event.at` per kind) so a restart
   does not re-announce.
 - Evaluate quiet hours at **event time**, not fire time.
-- **Pick the save model** and make code and doc agree (recommend debounced
-  save-on-change, as documented).
+- ~~**Pick the save model** and make code and doc agree (recommend debounced
+  save-on-change, as documented).~~ **Done (Steps 2–3):** debounced
+  save-on-change (800 ms) implemented; حفظ stays immediate.
 
 ### Step 4 — Phase 3: audio
 

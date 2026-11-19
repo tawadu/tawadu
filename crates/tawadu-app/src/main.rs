@@ -13,7 +13,7 @@ mod tray;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, NaiveTime, Utc};
 use slint::{ModelRc, SharedString, Timer, TimerMode, VecModel};
@@ -48,6 +48,47 @@ const METHODS: [(&str, &str, &str); 12] = [
     ("turkey", "Turkey", "تركيا"),
 ];
 
+/// Debounce decision for save-on-change: a save is due once `delay` has
+/// passed since the LAST change; every change restarts the window. Pure
+/// logic (injectable instants) so the policy is unit-testable; the UI thread
+/// drains it on a short tick.
+#[derive(Debug)]
+struct SaveDebounce {
+    delay: Duration,
+    pending_since: Option<Instant>,
+}
+
+impl SaveDebounce {
+    fn new(delay: Duration) -> Self {
+        Self {
+            delay,
+            pending_since: None,
+        }
+    }
+
+    /// A setting changed: (re)start the debounce window.
+    fn touch(&mut self, now: Instant) {
+        self.pending_since = Some(now);
+    }
+
+    /// An immediate save (حفظ) supersedes any pending debounce.
+    fn cancel(&mut self) {
+        self.pending_since = None;
+    }
+
+    /// True exactly once when the window has elapsed; clears the pending
+    /// save so the next tick does not write again.
+    fn take_if_due(&mut self, now: Instant) -> bool {
+        match self.pending_since {
+            Some(since) if now.duration_since(since) >= self.delay => {
+                self.pending_since = None;
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
 /// Everything the interface can change, plus where it is kept.
 struct AppState {
     settings: Settings,
@@ -55,6 +96,10 @@ struct AppState {
     status: String,
     /// Tells the scheduler to recompute now rather than at the end of its slice.
     wake: Option<Arc<mpsc::Sender<()>>>,
+    /// Save-on-change debounce (800 ms after the last mutation). RefCell so
+    /// `changed(&self)` can mark it without widening every call site; the
+    /// AppState Mutex already serializes access.
+    debounce: std::cell::RefCell<SaveDebounce>,
 }
 
 /// Decode a serde snake_case key back into a config value.
@@ -453,11 +498,13 @@ impl AppState {
         };
     }
 
-    /// A setting changed, so the day timeline may have changed with it.
+    /// A setting changed: wake the scheduler (the timeline may have changed)
+    /// and (re)start the debounced save-on-change window.
     fn changed(&self) {
         if let Some(wake) = &self.wake {
             let _ = wake.send(());
         }
+        self.debounce.borrow_mut().touch(Instant::now());
     }
 }
 
@@ -776,6 +823,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         storage,
         status: String::new(),
         wake: None,
+        debounce: std::cell::RefCell::new(SaveDebounce::new(Duration::from_millis(800))),
     }));
 
     let (wake_tx, wake_rx) = mpsc::channel::<()>();
@@ -1057,8 +1105,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 apply_settings(&ui, &state);
                 state.changed();
             }
+            // The immediate save supersedes any pending debounce write.
+            state.debounce.borrow_mut().cancel();
         });
     }
+
+    // Debounced save-on-change: every settings mutation marks the window via
+    // state.changed(); this short tick drains it once 800 ms of quiet have
+    // passed (worst-case latency 800 ms + one tick). حفظ stays immediate.
+    // Main scope: dropping a Slint Timer stops it, so it must outlive ui.run().
+    let save_timer = Timer::default();
+    let save_state = Arc::clone(&state);
+    let save_handle = ui.as_weak();
+    save_timer.start(TimerMode::Repeated, Duration::from_millis(200), move || {
+        let Some(ui) = save_handle.upgrade() else {
+            return;
+        };
+        let mut state = save_state.lock().unwrap();
+        if state.debounce.borrow_mut().take_if_due(Instant::now()) {
+            state.save();
+            apply_settings(&ui, &state);
+        }
+    });
 
     // Once a second: the countdown text only. Recompute when it runs out.
     // The tray lives in this closure so its tooltip rides the same tick —
@@ -1359,5 +1427,49 @@ mod tests {
             announce(&event, &riyadh(), &quiet_settings(), event.at).is_some(),
             "the athan is essential and bypasses quiet hours"
         );
+    }
+
+    #[test]
+    fn debounce_is_not_due_before_the_delay() {
+        let mut d = SaveDebounce::new(Duration::from_millis(800));
+        let t0 = Instant::now();
+        d.touch(t0);
+        assert!(!d.take_if_due(t0 + Duration::from_millis(799)));
+    }
+
+    #[test]
+    fn debounce_is_due_after_the_delay_and_fires_once() {
+        let mut d = SaveDebounce::new(Duration::from_millis(800));
+        let t0 = Instant::now();
+        d.touch(t0);
+        assert!(d.take_if_due(t0 + Duration::from_millis(800)));
+        // Cleared: the next tick must not write again.
+        assert!(!d.take_if_due(t0 + Duration::from_millis(2000)));
+    }
+
+    #[test]
+    fn debounce_restarts_on_every_change() {
+        let mut d = SaveDebounce::new(Duration::from_millis(800));
+        let t0 = Instant::now();
+        d.touch(t0);
+        d.touch(t0 + Duration::from_millis(600));
+        // 800 ms after the FIRST touch, but only 200 after the last.
+        assert!(!d.take_if_due(t0 + Duration::from_millis(800)));
+        assert!(d.take_if_due(t0 + Duration::from_millis(1400)));
+    }
+
+    #[test]
+    fn debounce_cancel_supersedes_pending_save() {
+        let mut d = SaveDebounce::new(Duration::from_millis(800));
+        let t0 = Instant::now();
+        d.touch(t0);
+        d.cancel();
+        assert!(!d.take_if_due(t0 + Duration::from_millis(5000)));
+    }
+
+    #[test]
+    fn debounce_without_changes_never_fires() {
+        let mut d = SaveDebounce::new(Duration::from_millis(800));
+        assert!(!d.take_if_due(Instant::now() + Duration::from_secs(60)));
     }
 }
