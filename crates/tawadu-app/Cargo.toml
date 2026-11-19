@@ -36,6 +36,8 @@ windows = { version = "0.62", features = [
 
 # Linux: probe for a StatusNotifier watcher before creating the tray (ADR 0002
 # condition 4 — ksni's spawn assumes a watcher, so we check ourselves).
-# Unifies with the zbus copy ksni already pulls in.
+# Uses zbus 5.x, the same major ksni pulls. notify-rust independently pulls
+# zbus 6.x for its XDG backend — two majors in the lock, one per consumer;
+# they cannot unify.
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "5"

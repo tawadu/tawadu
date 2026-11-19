@@ -5,6 +5,15 @@
 //! channel of our own: a named auto-reset event on Windows, a unix socket on
 //! Linux (abstract) and macOS (temp-dir path). The first instance listens; a
 //! second instance signals and exits.
+//!
+//! **Security note (reviewed, PR #1):** the Windows named event is created
+//! with the default DACL — any local process in the same session can signal
+//! it and thereby show the window. Impact is low (no data crosses the
+//! channel, no privilege is granted; the worst case is a window popping up),
+//! and a restrictive DACL is recorded as future hardening, not a blocker.
+//! The macOS socket is chmod 0o600 (owner only). Linux abstract sockets are
+//! visible within the same network namespace — same local-user exposure
+//! class as the Windows event, same low impact.
 
 /// Listen for restore signals from later launches. Binds synchronously, then
 /// services accepts/waits on a background thread for the app lifetime.
@@ -125,6 +134,14 @@ fn listen_on(name: &str, on_restore: impl Fn() + Send + 'static) {
             return;
         }
     };
+    // Owner-only access to the socket file (the temp dir is shared).
+    #[cfg(target_os = "macos")]
+    if let Some(path) = addr.as_pathname() {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(error) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+            log::warn!("could not chmod the restore socket ({error})");
+        }
+    }
     std::thread::Builder::new()
         .name("tawadu-restore".into())
         .spawn(move || {
@@ -197,5 +214,22 @@ mod tests {
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)), Ok(()));
         assert!(signal_on(&name));
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)), Ok(()));
+    }
+
+    // Listener threads live for the test process's lifetime (the production
+    // listener lives for the app's lifetime); the OS reclaims them at exit.
+    // Unique per-PID names keep parallel tests from colliding. On macOS the
+    // socket FILE would outlive the process, so tests remove it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_socket_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let name = test_name("chmod");
+        listen_on(&name, || {});
+        let addr = socket_addr(&name).expect("socket addr");
+        let path = addr.as_pathname().expect("pathname socket");
+        let mode = std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "restore socket must be owner-only");
+        let _ = std::fs::remove_file(path);
     }
 }

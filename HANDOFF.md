@@ -93,7 +93,7 @@ docs/              ROADMAP.md (plan of record), architecture.md, adr/, voice-pac
 - **Branch:** `main`. **HEAD at handoff:** `d8d8b1e`
 - **Git identity is repo-local:** `XGradien <173515018+XGradien@users.noreply.github.com>`
 - **Working tree is clean.**
-- **Tests:** 75 (60 core + 14 app unit + 1 process-level tray lifecycle), `fmt` + `clippy -D warnings` clean, CI green on all 3 OSes.
+- **Tests:** 78 (60 core + 17 app unit + 1 process-level tray lifecycle; macOS adds 1 socket-permission test), `fmt` + `clippy -D warnings` clean, CI green on all 3 OSes.
 
 ### Build and verify
 
@@ -359,7 +359,7 @@ Phase 7 (mobile, only after Phase 6).
 |---|---|
 | Repo | https://github.com/tawadu/tawadu |
 | Plan of record | `docs/ROADMAP.md` |
-| Tests | 75 (60 core + 14 app unit + 1 tray lifecycle) |
+| Tests | 78 (60 core + 17 app unit + 1 tray lifecycle; +1 macOS-only) |
 | Settings DB | `%APPDATA%\tawadu\tawadu.db` (Windows) |
 | Default settings | Riyadh · Umm al-Qura · pre-alert 10 · all notifications on · quiet hours 22:00–06:00 (off) |
 | Verified timings 2026-11-17 | Riyadh: Fajr 04:49 · Sunrise 06:11 · Dhuhr 11:38 · Asr 14:44 · Maghrib 17:06 · Isha 18:36 (UTC+3) |

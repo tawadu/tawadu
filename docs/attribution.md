@@ -31,3 +31,22 @@ Tawadu's code is MIT. Everything bundled besides the code keeps its own licence.
 | IBM Plex Sans | SIL OFL 1.1 | Latin UI |
 | IBM Plex Sans Arabic | SIL OFL 1.1 | Arabic UI |
 | Amiri | SIL OFL 1.1 | Scripture / athkar display |
+
+## Rust dependencies added for the tray (PR #1, ADR 0002)
+
+Verified against each crate's published `Cargo.toml` licence field. All are
+MIT-compatible; the GTK stack (`glib-sys`/`gtk` via muda's default features)
+was deliberately removed — the Linux tray uses the pure-Rust `ksni` backend.
+Surface these in the in-app Credits screen alongside the asset entries.
+
+| Crate | Version | Licence | Role |
+|---|---|---|---|
+| `tray-icon` | 0.26.1 | MIT OR Apache-2.0 | System tray icon (ksni backend on Linux) |
+| `muda` | 0.21.2 | Apache-2.0 OR MIT | Tray/app menus, MenuEvent channel |
+| `ksni` | 0.3.7 | Unlicense | Pure-Rust StatusNotifierItem (Linux tray) |
+| `zbus` | 5.19.0 | MIT | SNI-watcher probe (Linux); also pulled by ksni |
+| `windows` | 0.62.2 | MIT OR Apache-2.0 | AUMID registration + restore event (Windows) |
+
+Note: `notify-rust` independently pulls a second `zbus` major (6.x) for its
+XDG backend; the two majors cannot unify. `single-instance` 0.3 (MIT) was
+already a dependency before PR #1.

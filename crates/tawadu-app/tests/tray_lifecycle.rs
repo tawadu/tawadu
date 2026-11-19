@@ -24,19 +24,79 @@ use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_tawadu-app");
 
-fn spawn_app(extra: &[(&str, &str)]) -> (Child, Arc<Mutex<String>>) {
+/// A fresh, isolated config home per spawn: `Storage::default_db_path` is
+/// env-driven (APPDATA / HOME / XDG_CONFIG_HOME), so the suite never reads or
+/// writes the user's real settings — quiet hours or iqamah offsets on the dev
+/// machine must not change what the test asserts.
+fn fresh_config_home() -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static N: AtomicUsize = AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "tawadu-test-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::SeqCst)
+    ));
+    std::fs::create_dir_all(&dir).expect("create test config home");
+    dir
+}
+
+/// Kills the app on drop — including during a panic unwind, so a failed
+/// phase never orphans an instance that holds the single-instance lock
+/// against the next run.
+struct AppGuard(Child);
+
+impl Drop for AppGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+impl std::ops::Deref for AppGuard {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for AppGuard {
+    fn deref_mut(&mut self) -> &mut Child {
+        &mut self.0
+    }
+}
+
+fn spawn_app(extra: &[(&str, &str)]) -> (AppGuard, Arc<Mutex<String>>) {
+    spawn_app_in(&fresh_config_home(), extra)
+}
+
+fn spawn_app_in(home: &std::path::Path, extra: &[(&str, &str)]) -> (AppGuard, Arc<Mutex<String>>) {
     let mut cmd = Command::new(BIN);
     cmd.env("RUST_LOG", "info")
         .env("TAWADU_DEBUG_NOW", "2026-11-19T09:00:00Z")
         .env("TAWADU_DEBUG_TIME_SCALE", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    #[cfg(windows)]
+    cmd.env("APPDATA", home);
+    #[cfg(target_os = "macos")]
+    cmd.env("HOME", home);
+    #[cfg(all(unix, not(target_os = "macos")))]
+    cmd.env("XDG_CONFIG_HOME", home);
     for (key, value) in extra {
         cmd.env(key, value);
     }
     let mut child = cmd.spawn().expect("launch tawadu-app");
     let stderr = child.stderr.take().expect("piped stderr");
-    (child, drain(stderr))
+    (AppGuard(child), drain(stderr))
+}
+
+/// Pre-seed the isolated settings DB (the app loads it at startup).
+fn write_settings(home: &std::path::Path, settings: &tawadu_core::settings::Settings) {
+    let dir = home.join("tawadu");
+    std::fs::create_dir_all(&dir).expect("create test db dir");
+    let storage =
+        tawadu_core::storage::Storage::open(&dir.join("tawadu.db")).expect("open test settings db");
+    storage.save_settings(settings).expect("seed test settings");
 }
 
 /// Accumulate a pipe on a thread so reading logs never blocks the test.
@@ -59,7 +119,7 @@ fn drain(pipe: impl Read + Send + 'static) -> Arc<Mutex<String>> {
     log
 }
 
-fn wait_exit(child: &mut Child, timeout: Duration) -> Option<std::process::ExitStatus> {
+fn wait_exit(child: &mut AppGuard, timeout: Duration) -> Option<std::process::ExitStatus> {
     let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait().expect("try_wait") {
@@ -141,6 +201,19 @@ fn wait_for_visibility(visible: bool, timeout: Duration) -> bool {
 /// so two parallel app-launching tests would collide.
 #[test]
 fn tray_lifecycle() {
+    // Pre-flight: the suite needs the global single-instance lock. Fail fast
+    // with guidance instead of burning marker deadlines against an app that
+    // exited "already running". The probe handle drops immediately.
+    {
+        let probe = single_instance::SingleInstance::new("tawadu-app").expect("probe the lock");
+        assert!(
+            probe.is_single(),
+            "another Tawadu instance is running — wait for it to exit before \
+             running this suite (do not blind-kill: it may be a teammate's \
+             timed exit test)"
+        );
+    }
+
     // ---- phase 1: close → hidden → loop alive → Quit → clean exit ----
     let (mut app, log) = spawn_app(&[
         ("TAWADU_DEBUG_AUTOCLOSE_MS", "1500"),
@@ -155,6 +228,7 @@ fn tray_lifecycle() {
         "tray unavailable",
         Duration::from_secs(30),
     );
+    #[cfg(windows)]
     let closed = path == Some(0);
     assert!(
         path.is_some(),
@@ -236,4 +310,67 @@ fn tray_lifecycle() {
 
     let _ = first.kill();
     let _ = first.wait();
+
+    // ---- phase 3: alerts FIRE while hidden (ADR conditions 1-2) ----
+    // The regression Sentinel required: phases 1-2 would pass with the
+    // notification engine dead. Scale 60 + a 1 s real slice keeps each wake
+    // 60 debug-seconds ahead — inside the 120 s late tolerance. NOW 01:00Z =
+    // 04:00 Riyadh: pre-alert 01:39Z (~39 s real), athan 01:49Z (~49 s),
+    // iqamah 01:59Z (~59 s; Fajr offset 10 seeded below). The close lands at
+    // setup + 1.5 s, tens of seconds before the first alert even on slow CI.
+    let home = fresh_config_home();
+    let mut settings = tawadu_core::settings::Settings::default();
+    settings.iqamah.fajr = 10;
+    write_settings(&home, &settings);
+    let (mut alerting, log) = spawn_app_in(
+        &home,
+        &[
+            ("TAWADU_DEBUG_NOW", "2026-11-19T01:00:00Z"),
+            ("TAWADU_DEBUG_TIME_SCALE", "60"),
+            // 1 s real slice = 60 debug-seconds per wake, inside the 120 s
+            // late tolerance. Without it the default 60 s slice jumps 3600
+            // debug-seconds and drops every event (verified RED).
+            ("TAWADU_DEBUG_MAX_SLICE_MS", "1000"),
+            ("TAWADU_DEBUG_AUTOCLOSE_MS", "1500"),
+            ("TAWADU_DEBUG_BANNER_MS", "60000"),
+        ],
+    );
+    let tray_path = wait_for_either(
+        &log,
+        "hidden to tray",
+        "tray unavailable",
+        Duration::from_secs(30),
+    ) == Some(0);
+    #[cfg(windows)]
+    if tray_path {
+        assert!(
+            wait_for_visibility(false, Duration::from_secs(5)),
+            "window must be hidden before the alerts fire"
+        );
+    }
+    for marker in ["firing pre_alert", "firing prayer", "firing iqamah"] {
+        assert!(
+            wait_for_log(&log, marker, Duration::from_secs(90)),
+            "alert did not fire while hidden: {marker}; logs:\n{}",
+            log.lock().unwrap()
+        );
+    }
+    if tray_path {
+        assert!(
+            wait_for_log(
+                &log,
+                "restored window for alert banner",
+                Duration::from_secs(10)
+            ),
+            "the banner floor must restore + show the window for alerts; logs:\n{}",
+            log.lock().unwrap()
+        );
+        #[cfg(windows)]
+        assert!(
+            wait_for_visibility(true, Duration::from_secs(5)),
+            "restored window must actually be visible"
+        );
+    }
+    let _ = alerting.kill();
+    let _ = alerting.wait();
 }
