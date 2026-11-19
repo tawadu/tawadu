@@ -256,10 +256,12 @@ desktop.
 
 ### Step 1 — Decide the tray question (small, unblocks everything)
 
-> **DECIDED 2026-11-19 — option (c), unanimous panel.** Neither (a) nor (b) below
-> is needed: Slint 1.19's public `on_close_requested` + a held `KeepAlive` +
-> `tray-icon`/`muda`. Binding conditions and evidence:
+> **DONE 2026-11-19 — merged PR #1 (3f0b578).** Option (c) shipped: public
+> `on_close_requested` + `KeepAlive` + `tray-icon`/`muda`, banner floor while
+> hidden, AUMID, Linux SNI fallback, second-launch restore, alerts-while-hidden
+> regression test. Evidence and conditions:
 > [`docs/adr/0002-tray-close-to-tray.md`](docs/adr/0002-tray-close-to-tray.md).
+> Next: Step 2 (autostart) + Step 3 (defects) — see PIPELINE.md.
 > The original options are kept for the record:
 
 Either:

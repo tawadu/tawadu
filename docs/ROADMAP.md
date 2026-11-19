@@ -33,7 +33,7 @@ it beautiful and widely available.
 | ~~1~~ | ~~No settings screen~~ | **Done** — settings surface + SQLite write path, verified end to end |
 | 2 | Athkar card is hardcoded | It is a mock, not a feature |
 | 3 | Iqamah offsets default to `0` | No iqamah events are ever scheduled |
-| 4 | Tray decided (ADR 0002), implementing; autostart pending | Alerts still end when the window closes — until Step 1 lands |
+| ~~4~~ | ~~Tray~~ **Done** — PR #1 merged (3f0b578); autostart in progress | Close-to-tray verified: all three alerts fire while hidden, CI ×3 green |
 | 5 | `tawadu-audio` is an empty skeleton | No athan, no athkar audio |
 | 6 | Strings are hardcoded in `.slint` | No real i18n; RTL unverified |
 | 7 | 28 cities, no search, no GPS | Most users cannot set their town |
@@ -89,6 +89,12 @@ choose a city, a method and iqamah offsets.
 survive; iqamah offsets produce real iqamah events.
 
 ### Phase 2 — The notification engine and tray
+
+**Status: COMPLETE (2026-11-19, PR #1 → 3f0b578).** Exit verified: close → tray
+remains → pre-alert/athan/iqamah fire while hidden (window restored + banner),
+including the sleep/wake sweep via debug clock; Quit exits cleanly; second
+launch restores. 82 tests, CI green on all 3 OSes, Sentinel approve. See
+[`adr/0002-tray-close-to-tray.md`](adr/0002-tray-close-to-tray.md) and PIPELINE.md.
 
 **Why second:** the app's whole point is alerting. This is the highest-value slice
 after usability.
