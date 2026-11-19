@@ -2,7 +2,7 @@
 
 **A calm, offline-first prayer companion.** Accurate prayer times, real adhan audio, your mosque's iqamah, and your athkar — no ads, no account, no tracking.
 
-> **Phase 1 in progress.** The calculation core, CLI and a first Slint home surface are built and tested; the plan of record is [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Phase 2 done; Phase 3 (audio) next.** The calculation core, CLI, and Slint shell (home, settings, notifications, tray) are built and tested; the plan of record is [docs/ROADMAP.md](docs/ROADMAP.md) and the living state in [PIPELINE.md](PIPELINE.md).
 
 ---
 
@@ -26,8 +26,11 @@ The design identity lives in [`design/`](design/) — see [`design/brand.md`](de
 | | |
 |---|---|
 | Phase 0 — core | **done** — prayer, qibla, hijri, locations, scheduler, storage, CLI |
-| Phase 1 — usable | **in progress** — home surface renders; settings surface next |
-| Tests | 42, plus `fmt` and `clippy -D warnings` |
+| Phase 1 — usable | **done** — home + settings surfaces; settings write path verified end to end |
+| Phase 2 — notifications + tray | **done** — merged PR #1 (`3f0b578`): close-to-tray, scheduler, quiet hours, banner; CI ×3 green |
+| Steps 2–3 — autostart + defects | **in flight** — fired-event ledger, quiet-hours-at-event-time, auto-launch opt-in |
+| Phase 3 — audio | **prep done** — voice-pack format, UI proposal + 68 AR/EN strings, Sentinel-audited source ledger; implementation next |
+| Tests | 82 on main (CI green), plus `fmt` and `clippy -D warnings` |
 | CI | build + test on Linux, Windows, macOS |
 | Licence | MIT (code) · assets under their own licences |
 

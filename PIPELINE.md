@@ -69,7 +69,7 @@
 - Restore-channel hardening (Windows DACL), zbus 5.19+6.3 lock duplication comment, restore-test listener leaks, restore-bind race window.
 - Phase 6: gold #B08A4A unused + Today-panel tint undocumented; banner i18n; now-clock display.
 - Phase 4: "MORNING ATHKAR" label shown pre-Fajr (static card until engine lands).
-- README stale (says Phase 1 / 42 tests) — refresh at next docs pass.
+- ~~README stale (says Phase 1 / 42 tests)~~ refreshed 2026-11-19 (heartbeat docs pass).
 
 ## Heartbeat (for scheduled sessions)
 
