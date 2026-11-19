@@ -11,18 +11,18 @@
 | 0 core | DONE | 60 core tests, fixtures, polar/far-east cases |
 | 1 usable shell | DONE | settings write path verified end to end |
 | 2 notifications + tray | **DONE — merged PR #1 (3f0b578)** | 82 tests; CI ×3 green (run 44429295414); desktop exit test: close→hidden→pre-alert/athan/iqamah fire while hidden→restore+banner→Quit exit 0; Sentinel APPROVE; tray icon registered (NotifyIconSettings) |
-| Steps 2–3 (autostart + defects) | IN FLIGHT — Forge | branch feat/step2-3-autostart-defects |
-| 3 audio | PREP IN FLIGHT (Scout sources / Prism UI; **Quill strings DONE `826a6ca`**) | docs/voice-pack-format.md is the contract; docs/audio-ui-strings.md = 68 AR/EN keys |
+| Steps 2–3 (autostart + defects) | IN FLIGHT — Forge (active ~04:04 UTC, no nudge needed) | branch feat/step2-3-autostart-defects: fired-event ledger `84d3b97`, quiet-hours-at-event-time fix `ccf601b`; PR not yet open |
+| 3 audio | **PREP DONE — all 3 docs accepted** | strings `826a6ca`; proposal+sketch `6873a7f`; ledger `07ef5ec`; Sentinel licence audit 2026-11-19 passed with binding conditions (A1/A3/A4 live re-verify before any asset commit; PDM REJECT — no Tier B bundling) |
 | 4 athkar | queued | MIT Hisn al-Muslim corpus candidate |
 | 5–6 coverage/i18n/budgets/packaging | queued | RTL unverified = biggest UI unknown |
 
 ## Next actions (owner → action → done-when)
 
 1. **Forge** → Steps 2+3 on feat/step2-3-autostart-defects: auto-launch opt-in (default off, APPEARANCE switch); fired-event ledger (persist last fired event.at per kind, no re-announce on restart); quiet hours at EVENT time; debounced save-on-change (keep حفظ as immediate save; doc+code agree). → PR open, gate green, tests RED-first.
-2. **Scout** → docs/audio-sources.md: athan recordings with explicit permissive licences (Wikimedia Commons CC0/CC-BY first), per-file licence text + attribution + URL + sha256; verify MIT Hisn al-Muslim corpus for Phase 4. NO MoIA re-litigation (verbal clearance recorded; user said stop). → table Sentinel can audit.
+2. ~~**Scout** → docs/audio-sources.md~~ **DONE — `07ef5ec`**, Sentinel audit passed 2026-11-19 (conditions recorded below; A1/A3/A4 live-byte re-verify + download provenance are preconditions of the asset PR).
 3. ~~**Quill** → docs/audio-ui-strings.md~~ **DONE — `826a6ca`**: 68 AR/EN keys for audio settings (packs, per-event voice, trim, volume, shuffle/sequential), import errors, both empty states, and the credits page. Bilingual table, no mixed-script runs; Latin travels in `{ $… }` placeholders rendered as their own run. Consumed by Phase 3 and the Phase 6 Fluent catalogs.
-4. **Prism** → audio settings UI proposal (brand tokens, calm layout, RTL-aware): pack cards, per-event selectors, trim control. → sketch + Slint layout notes.
-5. **Sentinel** → review Forge's PR when opened; audit Scout's licence table before ANY asset commit.
+4. ~~**Prism** → audio settings UI proposal~~ **DONE — `6873a7f`** (proposal + interactive HTML sketch accepted; polish notes above are the visual gate).
+5. **Sentinel** → review Forge's PR when opened (ledger audit done 2026-11-19; binding conditions recorded above).
 6. **Atlas** → gate + merge Steps 2–3; then dispatch Phase 3 implementation (tawadu-audio: rodio/symphonia mixer, pack format, trim/sequence/shuffle, rfd importer, per-event voice); tray pixel follow-up below.
 
 ## Conventions (binding)
