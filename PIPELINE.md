@@ -32,6 +32,7 @@
 - Windows: `taskkill /F /IM tawadu-app.exe` before builds; confirm BUILD OK + exe timestamp (stale-binary trap).
 - Debug clock: TAWADU_DEBUG_NOW / TIME_SCALE / BANNER_MS / MAX_SLICE_MS / AUTOCLOSE_MS / AUTOQUIT_MS. Scale×slice must stay inside 120s late-tolerance (scale 12 + 5s slice, or scale 60 + 1s slice).
 - Never commit an asset without a licence entry (assets/licenses/). Never fabricate a UI value. tawadu-core stays UI/platform-free. Repo-local git identity unchanged. Offline-first; no telemetry.
+- **Worktree isolation (binding, added 2026-11-19 after a shared-tree collision):** the shared checkout `C:\Users\XBY\Projects\tawadu` stays on `main` and is owned by Atlas. Bots work in their OWN git worktrees (Forge: `C:\Users\XBY\Projects\tawadu-step23`). NEVER switch branches in the shared tree while another agent has WIP. Rescue branch `rescue/team-main-20261119` preserves the collision state — delete only after PR #2 merges.
 - Decisions: unanimous subagent panel before risky directions (user standing instruction).
 
 ## Phase 3 product decisions (Atlas owns; answers to audio-ui-strings.md §10)
