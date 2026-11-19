@@ -151,6 +151,15 @@ pub fn build(times: PrayerTimes, iqamah: &IqamahOffsets, pre_alert_minutes: u32)
     Timeline { times, events }
 }
 
+/// Whether this event was already announced: the ledger holds an instant at
+/// or after the event's own instant. Exact identity is `event.at` — computed
+/// deterministically from the day, location and settings, so it is stable
+/// across restarts. Fail open (`None` → fire): a missing ledger must never
+/// silence an alert.
+pub fn already_fired(last: Option<DateTime<Utc>>, at: DateTime<Utc>) -> bool {
+    last.is_some_and(|last| last >= at)
+}
+
 impl Timeline {
     /// The first event strictly after `now`.
     pub fn next_after(&self, now: DateTime<Utc>) -> Option<&Event> {
@@ -324,5 +333,18 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[test]
+    fn already_fired_compares_the_ledger_instant_to_the_event() {
+        let at = Utc.with_ymd_and_hms(2026, 11, 19, 1, 41, 0).unwrap();
+        // No ledger entry: fire (fail open).
+        assert!(!already_fired(None, at));
+        // Same instant (restart inside the tolerance): skip.
+        assert!(already_fired(Some(at), at));
+        // A later fire of the same identity: this one is past — skip.
+        assert!(already_fired(Some(at + Duration::minutes(1)), at));
+        // An earlier fire (yesterday's event): today's is new — fire.
+        assert!(!already_fired(Some(at - Duration::days(1)), at));
     }
 }

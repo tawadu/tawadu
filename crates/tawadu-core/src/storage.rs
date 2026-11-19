@@ -4,11 +4,12 @@
 //! Only settings exist so far; the remaining tables arrive with their features.
 
 use crate::settings::Settings;
-use rusqlite::{params, Connection};
+use chrono::{DateTime, Utc};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 
 /// Current schema version. Bump on every migration.
-pub const SCHEMA_VERSION: i32 = 1;
+pub const SCHEMA_VERSION: i32 = 2;
 
 /// The result of loading settings, with every case kept distinct.
 ///
@@ -87,6 +88,12 @@ impl Storage {
                  id INTEGER PRIMARY KEY CHECK (id = 1),
                  json TEXT NOT NULL,
                  updated_at TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS fired (
+                 kind TEXT NOT NULL,
+                 prayer TEXT NOT NULL,
+                 at TEXT NOT NULL,
+                 PRIMARY KEY (kind, prayer)
              );",
         )?;
         self.conn.execute(
@@ -104,6 +111,45 @@ impl Storage {
             |row| row.get::<_, String>(0),
         )?;
         Ok(value.parse().unwrap_or(0))
+    }
+
+    /// Record that an event was actually announced (upsert per kind+prayer).
+    /// Written on fire, so a restart inside the late tolerance does not
+    /// re-announce the same event.
+    pub fn record_fired(
+        &self,
+        kind: &str,
+        prayer: &str,
+        at: DateTime<Utc>,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "INSERT INTO fired (kind, prayer, at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(kind, prayer) DO UPDATE SET at = excluded.at",
+            params![kind, prayer, at.to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    /// The last announced instant for this kind+prayer, if any. A corrupt
+    /// timestamp reads as `None` (fail open: re-announce rather than silence).
+    pub fn last_fired(
+        &self,
+        kind: &str,
+        prayer: &str,
+    ) -> Result<Option<DateTime<Utc>>, rusqlite::Error> {
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT at FROM fired WHERE kind = ?1 AND prayer = ?2",
+                params![kind, prayer],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(raw.and_then(|raw| {
+            DateTime::parse_from_rfc3339(&raw)
+                .ok()
+                .map(|at| at.with_timezone(&Utc))
+        }))
     }
 
     /// Save the settings blob (single row, id = 1).
@@ -266,5 +312,93 @@ mod tests {
     fn records_the_schema_version() {
         let storage = Storage::open_in_memory().unwrap();
         assert_eq!(storage.schema_version().unwrap(), SCHEMA_VERSION);
+    }
+
+    fn instant(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+
+    #[test]
+    fn ledger_round_trips_a_fired_event() {
+        let storage = Storage::open_in_memory().unwrap();
+        let at = instant("2026-11-19T01:41:00Z");
+        storage.record_fired("pre_alert", "Fajr", at).unwrap();
+        assert_eq!(storage.last_fired("pre_alert", "Fajr").unwrap(), Some(at));
+    }
+
+    #[test]
+    fn ledger_is_empty_before_any_fire() {
+        let storage = Storage::open_in_memory().unwrap();
+        assert_eq!(storage.last_fired("prayer", "Fajr").unwrap(), None);
+    }
+
+    #[test]
+    fn ledger_upserts_the_latest_fire_per_identity() {
+        let storage = Storage::open_in_memory().unwrap();
+        let first = instant("2026-11-19T01:41:00Z");
+        let second = instant("2026-11-20T01:42:00Z");
+        storage.record_fired("pre_alert", "Fajr", first).unwrap();
+        storage.record_fired("pre_alert", "Fajr", second).unwrap();
+        assert_eq!(
+            storage.last_fired("pre_alert", "Fajr").unwrap(),
+            Some(second)
+        );
+    }
+
+    #[test]
+    fn ledger_identities_are_independent() {
+        let storage = Storage::open_in_memory().unwrap();
+        let at = instant("2026-11-19T01:41:00Z");
+        storage.record_fired("pre_alert", "Fajr", at).unwrap();
+        // Same prayer, different kind; same kind, different prayer.
+        assert_eq!(storage.last_fired("prayer", "Fajr").unwrap(), None);
+        assert_eq!(storage.last_fired("pre_alert", "Dhuhr").unwrap(), None);
+    }
+
+    #[test]
+    fn ledger_survives_reopen_and_v1_databases_migrate() {
+        // A schema-v1 file (settings only) must gain the ledger on open
+        // without losing the saved settings.
+        let path = std::env::temp_dir().join(format!(
+            "tawadu-ledger-migration-{}-{}.db",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let _ = std::fs::remove_file(&path);
+        {
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 CREATE TABLE settings (
+                     id INTEGER PRIMARY KEY CHECK (id = 1),
+                     json TEXT NOT NULL,
+                     updated_at TEXT NOT NULL
+                 );",
+            )
+            .unwrap();
+            old.execute(
+                "INSERT INTO meta (key, value) VALUES ('schema_version', '1')",
+                [],
+            )
+            .unwrap();
+            let json = serde_json::to_string(&Settings::default()).unwrap();
+            old.execute(
+                "INSERT INTO settings (id, json, updated_at) VALUES (1, ?1, 'then')",
+                params![json],
+            )
+            .unwrap();
+        }
+        let storage = Storage::open(&path).unwrap();
+        assert_eq!(storage.schema_version().unwrap(), SCHEMA_VERSION);
+        assert_eq!(
+            storage.load_settings(),
+            LoadOutcome::Loaded(Settings::default())
+        );
+        let at = instant("2026-11-19T01:41:00Z");
+        storage.record_fired("prayer", "Fajr", at).unwrap();
+        drop(storage);
+        let reopened = Storage::open(&path).unwrap();
+        assert_eq!(reopened.last_fired("prayer", "Fajr").unwrap(), Some(at));
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -20,6 +20,7 @@ notify-rust.workspace = true
 single-instance.workspace = true
 tray-icon.workspace = true
 muda.workspace = true
+auto-launch = "0.6.0"
 
 [build-dependencies]
 slint-build = "=1.19.0"
