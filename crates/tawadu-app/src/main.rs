@@ -733,6 +733,11 @@ fn apply_credits(ui: &MainWindow, state: &AppState) {
             role: "Tray/app menus".into(),
         },
         CreditRow {
+            name: "Hisn al-Muslim · Islamic-Pro-azkar-API".into(),
+            license: "MIT".into(),
+            role: "Athkar text corpus (pinned d793023e)".into(),
+        },
+        CreditRow {
             name: "ksni".into(),
             license: "Unlicense".into(),
             role: "Linux StatusNotifier tray".into(),
