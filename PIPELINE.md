@@ -11,14 +11,14 @@
 | 0 core | DONE | 60 core tests, fixtures, polar/far-east cases |
 | 1 usable shell | DONE | settings write path verified end to end |
 | 2 notifications + tray | **DONE — merged PR #1 (3f0b578)** | 82 tests; CI ×3 green (run 44429295414); desktop exit test: close→hidden→pre-alert/athan/iqamah fire while hidden→restore+banner→Quit exit 0; Sentinel APPROVE; tray icon registered (NotifyIconSettings) |
-| Steps 2–3 (autostart + defects) | IN FLIGHT — Forge (active ~04:04 UTC, no nudge needed) | branch feat/step2-3-autostart-defects: fired-event ledger `84d3b97`, quiet-hours-at-event-time fix `ccf601b`; PR not yet open |
+| Steps 2–3 (autostart + defects) | **PR #2 OPEN (01:07:29Z) — Forge still refining** | 4 slices pushed: ledger `84d3b97`, quiet-hours `ccf601b`, debounced save `d657034`, autostart `bb301ff`; uncommitted WIP in tawadu-step23 (wiring); GUI window 01:08–01:42 UTC announced in PR comments |
 | 3 audio | **PREP DONE — all 3 docs accepted** | strings `826a6ca`; proposal+sketch `6873a7f`; ledger `07ef5ec`; Sentinel licence audit 2026-11-19 passed with binding conditions (A1/A3/A4 live re-verify before any asset commit; PDM REJECT — no Tier B bundling) |
 | 4 athkar | queued | MIT Hisn al-Muslim corpus candidate |
 | 5–6 coverage/i18n/budgets/packaging | queued | RTL unverified = biggest UI unknown |
 
 ## Next actions (owner → action → done-when)
 
-1. **Forge** → Steps 2+3 on feat/step2-3-autostart-defects: auto-launch opt-in (default off, APPEARANCE switch); fired-event ledger (persist last fired event.at per kind, no re-announce on restart); quiet hours at EVENT time; debounced save-on-change (keep حفظ as immediate save; doc+code agree). → PR open, gate green, tests RED-first.
+1. **Forge** → Steps 2+3 on feat/step2-3-autostart-defects (PR #2 open 01:07:29Z, head `bb301ff`): finish ledger wiring + lifecycle RED/GREEN, run full gate, push. → CI ×3 green on final head, Sentinel approve.
 2. ~~**Scout** → docs/audio-sources.md~~ **DONE — `07ef5ec`**, Sentinel audit passed 2026-11-19 (conditions recorded below; A1/A3/A4 live-byte re-verify + download provenance are preconditions of the asset PR).
 3. ~~**Quill** → docs/audio-ui-strings.md~~ **DONE — `826a6ca`**: 68 AR/EN keys for audio settings (packs, per-event voice, trim, volume, shuffle/sequential), import errors, both empty states, and the credits page. Bilingual table, no mixed-script runs; Latin travels in `{ $… }` placeholders rendered as their own run. Consumed by Phase 3 and the Phase 6 Fluent catalogs.
 4. ~~**Prism** → audio settings UI proposal~~ **DONE — `6873a7f`** (proposal + interactive HTML sketch accepted; polish notes above are the visual gate).
@@ -71,6 +71,10 @@
 - Phase 6: gold #B08A4A unused + Today-panel tint undocumented; banner i18n; now-clock display.
 - Phase 4: "MORNING ATHKAR" label shown pre-Fajr (static card until engine lands).
 - ~~README stale (says Phase 1 / 42 tests)~~ refreshed 2026-11-19 (heartbeat docs pass).
+
+## Heartbeat log (latest first)
+
+- **2026-11-19 04:25 AST** — PR #2 open (4 slices), Forge mid-wiring (uncommitted WIP, log fresh). **CI anomaly:** pull_request event dropped — push 01:07:03Z + PR open 01:07:29Z raced; 18+ min, zero check suites on `bb301ff`. Fixed forward: `c0ee22f` adds `workflow_dispatch` to ci.yml (main; PR branch gains it on next rebase/merge). Forge's next push fires the normal pull_request event; if it doesn't, Atlas re-triggers manually. GUI window 01:08–01:42 UTC respected — no local GUI test before close. Sentinel: staged review (final pass after wiring) — watch for staleness next beat.
 
 ## Heartbeat (for scheduled sessions)
 
