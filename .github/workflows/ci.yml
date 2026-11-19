@@ -46,17 +46,15 @@ jobs:
       # Linux needs a display. Under xvfb there is no SNI watcher, which
       # exercises the KeepWindowShown fallback path (ADR 0002 condition 4);
       # the hide-to-tray path is exercised on Windows/macOS runners.
-      - name: Test (Linux, virtual display + real SNI tray host)
+      - name: Test (Linux, virtual display)
         if: matrix.os == 'ubuntu-latest'
-        # snixembed owns org.kde.StatusNotifierWatcher and bridges SNI items
-        # to the XEmbed host (stalonetray), so Linux exercises the REAL
-        # hide-to-tray path, same as Windows/macOS. If the host fails to
-        # start, the suite's tray-or-fallback branch still verifies the
-        # KeepWindowShown fallback instead of failing spuriously.
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq snixembed stalonetray
-          xvfb-run -a bash -c 'stalonetray & snixembed & sleep 2; cargo test --workspace'
+        # snixembed (real SNI host, Atlas option a) is NOT in ubuntu-24.04
+        # repos ("Unable to locate package", run 44440795375) — using the
+        # sanctioned option (b): the suite branches on tray availability and
+        # verifies the KeepWindowShown fallback here. Future: a stub
+        # StatusNotifierWatcher in the test harness (zbus is already a dep)
+        # would give Linux the real hide path without external packages.
+        run: xvfb-run -a cargo test --workspace
 
       - name: Test
         if: matrix.os != 'ubuntu-latest'
