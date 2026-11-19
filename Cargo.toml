@@ -44,6 +44,9 @@ tray-icon = { version = "0.26", default-features = false, features = ["ksni"] }
 # into the build despite ksni. tray-icon's ksni feature adds muda/snapshot.
 muda = { version = "0.21", default-features = false }
 single-instance = "0.3"
+# Native file/folder pickers for the pack importer (sync API, called on a
+# background thread — the UI never blocks on a dialog).
+rfd = "0.15"
 # --- misc ---
 log = "0.4"
 env_logger = "0.11"

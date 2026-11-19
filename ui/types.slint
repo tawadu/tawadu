@@ -24,3 +24,51 @@ export struct OptionRow {
     value: string,
     label: string,
 }
+
+// ---- audio (Phase 3, Prism's proposal §7) ----
+
+export struct PackRow {
+    id: string,
+    name: string,
+    name-ar: string,
+    reciter: string,
+    license: string,
+    duration: string,      // "" = unknown → غير متاح, never a guess
+    is-bundled: bool,
+    is-selected: bool,
+}
+
+export struct VoiceOption {
+    id: string,            // "" = Default, "builtin:chime", or a pack id
+    label: string,
+    label-ar: string,
+    pack-name: string,
+}
+
+export struct EventVoiceRow {
+    kind: string,          // "athan" | "iqamah" | "athkar" | "chime"
+    label: string,
+    label-ar: string,
+    voice-id: string,      // the explicit choice ("" = Default)
+    voice-label: string,   // Latin run: chosen pack name or "Default"
+    voice-label-ar: string,
+    mode: string,          // effective mode: "sequential" | "shuffle"
+    has-override: bool,    // "Reset to pack default" only while true
+    has-voice: bool,       // false = honest empty state (غير محدد)
+}
+
+export struct CreditPack {
+    name: string,
+    name-ar: string,
+    reciter: string,
+    source: string,
+    license: string,
+    attribution: string,
+    license-text: string,  // exact licences/ file content, unedited
+}
+
+export struct CreditRow {
+    name: string,
+    license: string,
+    role: string,
+}

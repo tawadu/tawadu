@@ -23,12 +23,13 @@ use tawadu_core::locations::{find_city, Location, CITIES};
 use tawadu_core::notify::{self, NotificationKind};
 use tawadu_core::prayer::{self, HighLatitudeRule, Madhab, Method, Prayer, PrayerTimes, Rounding};
 use tawadu_core::scheduler::{self, EventKind, IqamahOffsets, Timeline};
-use tawadu_core::settings::{Language, Settings, Theme};
+use tawadu_core::settings::{AudioSettings, EventVoice, Language, PlaybackMode, Settings, Theme};
 use tawadu_core::storage::{LoadOutcome, Storage};
 
-use tawadu_audio::engine::{self, AudioEngine, PlayRequest};
+use tawadu_audio::edit::playable_ms;
+use tawadu_audio::engine::{self, AudioEngine, PlayRequest, PlaybackPlan};
 use tawadu_audio::library::PackLibrary;
-use tawadu_audio::routing;
+use tawadu_audio::routing::{self, InstalledPack, ResolvedVoice};
 
 slint::include_modules!();
 
@@ -220,6 +221,7 @@ fn apply_theme(ui: &MainWindow, theme: Theme) {
         c.accent_ink.2,
     ));
     palette.set_gold(Color::from_rgb_u8(c.gold.0, c.gold.1, c.gold.2));
+    palette.set_gold_is_accent(matches!(theme, Theme::Ramadan));
 }
 
 fn city_rows(query: &str) -> Vec<CityRow> {
@@ -488,6 +490,239 @@ fn apply_settings(ui: &MainWindow, state: &AppState) {
     ui.set_iqamah_isha(settings.iqamah.isha as i32);
 
     ui.set_status_message(state.status.clone().into());
+    apply_audio(ui, state);
+}
+
+/// Push the audio state into the AUDIO band. Lock order: AppState (held by
+/// the caller) THEN library — the same order the scheduler uses.
+fn apply_audio(ui: &MainWindow, state: &AppState) {
+    let Some(library) = &state.library else {
+        return;
+    };
+    let lib = library.lock().unwrap();
+    let audio = &state.settings.audio;
+    ui.set_audio_packs(ModelRc::new(VecModel::from(pack_rows(
+        lib.packs(),
+        audio.default_pack.as_deref(),
+    ))));
+    ui.set_audio_voices(ModelRc::new(VecModel::from(voice_options(
+        lib.packs(),
+        false,
+    ))));
+    ui.set_chime_voices(ModelRc::new(VecModel::from(voice_options(
+        lib.packs(),
+        true,
+    ))));
+    ui.set_event_voices(ModelRc::new(VecModel::from(event_voice_rows(
+        lib.packs(),
+        audio,
+    ))));
+    ui.set_audio_volume((state.settings.athan_volume * 100.0).round() as i32);
+    ui.set_athan_stop_after_s(audio.athan_stop_after_s as i32);
+    if audio.athan_stop_after_s == 0 {
+        // The stepper's zero label carries the "no trim" copy.
+        ui.set_trim_unit(SharedString::new());
+        ui.set_trim_unit_ar(SharedString::new());
+    } else {
+        let (unit, unit_ar) = trim_unit_words(audio.athan_stop_after_s);
+        ui.set_trim_unit(unit.into());
+        ui.set_trim_unit_ar(unit_ar.into());
+    }
+}
+
+/// The credits page: one card per installed pack with the EXACT licence
+/// file text, plus the font and library entries from docs/attribution.md.
+fn apply_credits(ui: &MainWindow, state: &AppState) {
+    let packs: Vec<CreditPack> = match &state.library {
+        Some(library) => {
+            let lib = library.lock().unwrap();
+            lib.packs()
+                .iter()
+                .map(|pack| {
+                    let dir = lib.pack_dir(&pack.id).join("licenses");
+                    let mut license_text = String::new();
+                    if let Ok(entries) = std::fs::read_dir(&dir) {
+                        let mut files: Vec<_> = entries
+                            .flatten()
+                            .map(|entry| entry.path())
+                            .filter(|path| path.is_file())
+                            .collect();
+                        files.sort();
+                        for path in files {
+                            if let Ok(text) = std::fs::read_to_string(&path) {
+                                if !license_text.is_empty() {
+                                    license_text.push_str("\n\n");
+                                }
+                                license_text.push_str(text.trim_end());
+                            }
+                        }
+                    }
+                    CreditPack {
+                        name: pack.manifest.name.clone().into(),
+                        name_ar: pack.manifest.name_ar.clone().unwrap_or_default().into(),
+                        reciter: pack.manifest.reciter.clone().into(),
+                        source: pack.manifest.source_url.clone().into(),
+                        license: pack.manifest.license.clone().into(),
+                        attribution: pack.manifest.attribution.clone().into(),
+                        license_text: license_text.into(),
+                    }
+                })
+                .collect()
+        }
+        None => Vec::new(),
+    };
+    ui.set_credit_packs(ModelRc::new(VecModel::from(packs)));
+    ui.set_credit_fonts(ModelRc::new(VecModel::from(vec![
+        CreditRow {
+            name: "IBM Plex Sans".into(),
+            license: "SIL OFL 1.1".into(),
+            role: "Latin UI".into(),
+        },
+        CreditRow {
+            name: "IBM Plex Sans Arabic".into(),
+            license: "SIL OFL 1.1".into(),
+            role: "Arabic UI".into(),
+        },
+        CreditRow {
+            name: "Amiri".into(),
+            license: "SIL OFL 1.1".into(),
+            role: "Scripture / athkar display".into(),
+        },
+    ])));
+    ui.set_credit_libs(ModelRc::new(VecModel::from(vec![
+        CreditRow {
+            name: "auto-launch".into(),
+            license: "MIT".into(),
+            role: "Opt-in start-at-login".into(),
+        },
+        CreditRow {
+            name: "windows-registry".into(),
+            license: "MIT OR Apache-2.0".into(),
+            role: "Windows Run-key detection".into(),
+        },
+        CreditRow {
+            name: "tray-icon".into(),
+            license: "MIT OR Apache-2.0".into(),
+            role: "System tray icon".into(),
+        },
+        CreditRow {
+            name: "muda".into(),
+            license: "Apache-2.0 OR MIT".into(),
+            role: "Tray/app menus".into(),
+        },
+        CreditRow {
+            name: "ksni".into(),
+            license: "Unlicense".into(),
+            role: "Linux StatusNotifier tray".into(),
+        },
+        CreditRow {
+            name: "zbus".into(),
+            license: "MIT".into(),
+            role: "SNI watcher probe (Linux)".into(),
+        },
+        CreditRow {
+            name: "windows".into(),
+            license: "MIT OR Apache-2.0".into(),
+            role: "AUMID + restore event (Windows)".into(),
+        },
+        CreditRow {
+            name: "single-instance".into(),
+            license: "MIT".into(),
+            role: "Single-instance lock".into(),
+        },
+        CreditRow {
+            name: "rodio".into(),
+            license: "MIT OR Apache-2.0".into(),
+            role: "Audio playback".into(),
+        },
+        CreditRow {
+            name: "symphonia".into(),
+            license: "MPL-2.0".into(),
+            role: "Audio decoding".into(),
+        },
+        CreditRow {
+            name: "hound".into(),
+            license: "Apache-2.0".into(),
+            role: "WAV render cache".into(),
+        },
+        CreditRow {
+            name: "zip".into(),
+            license: "MIT".into(),
+            role: ".tawadupack import".into(),
+        },
+        CreditRow {
+            name: "sha2".into(),
+            license: "MIT OR Apache-2.0".into(),
+            role: "Checksum verification".into(),
+        },
+        CreditRow {
+            name: "rfd".into(),
+            license: "MIT".into(),
+            role: "Native file pickers".into(),
+        },
+    ])));
+    ui.set_code_license("MIT".into());
+}
+
+/// Import on a background thread: the picker AND the validation/probe/copy
+/// never block the UI. Results return through the event loop.
+fn spawn_import(state: Arc<Mutex<AppState>>, weak: slint::Weak<MainWindow>, folder: bool) {
+    std::thread::spawn(move || {
+        let picked = if folder {
+            rfd::FileDialog::new().pick_folder()
+        } else {
+            rfd::FileDialog::new()
+                .add_filter("Tawadu voice pack", &["tawadupack"])
+                .pick_file()
+        };
+        let Some(path) = picked else {
+            // Quill audio-import-cancelled.
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.set_audio_message("Import cancelled.".into());
+                    ui.set_audio_message_ar("أُلغي الاستيراد.".into());
+                    ui.set_audio_message_arg(SharedString::new());
+                    ui.set_audio_message_ar_after(SharedString::new());
+                }
+            });
+            return;
+        };
+        // Clone the library handle OUT of the state lock: the import's IO
+        // and probing must not hold the AppState mutex.
+        let library = state.lock().unwrap().library.clone();
+        let result = library.map(|library| library.lock().unwrap().import(&path));
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let mut state = state.lock().unwrap();
+            match result {
+                Some(Ok(pack)) => {
+                    state.status = format!("Added pack: {}", pack.manifest.name);
+                    state.changed();
+                    apply_audio(&ui, &state);
+                    ui.set_status_message(state.status.clone().into());
+                    // Quill audio-import-success, split around the name.
+                    ui.set_audio_message(
+                        format!("\u{201C}{}\u{201D} was added.", pack.manifest.name).into(),
+                    );
+                    ui.set_audio_message_ar("أُضيفت «".into());
+                    ui.set_audio_message_arg(pack.manifest.name.clone().into());
+                    ui.set_audio_message_ar_after("».".into());
+                }
+                Some(Err(error)) => {
+                    // The validator's exact reason, Arabic pre-split so the
+                    // offending path renders as its own run (Quill §2).
+                    let message = error.message();
+                    ui.set_audio_message(message.body_en.into());
+                    ui.set_audio_message_ar(message.body_ar_before.into());
+                    ui.set_audio_message_arg(message.arg.into());
+                    ui.set_audio_message_ar_after(message.body_ar_after.into());
+                }
+                None => {}
+            }
+        });
+    });
 }
 
 /// The serde key for a method, for highlighting the current row.
@@ -496,6 +731,159 @@ fn serde_key(method: &Method) -> String {
         .ok()
         .and_then(|value| value.as_str().map(str::to_string))
         .unwrap_or_default()
+}
+
+// ---- audio UI row builders (pure; the Slint surface only renders these) ----
+
+/// Quill's `audio-trim-seconds` plural (CLDR Arabic categories), as two
+/// separate runs — the numeral stays in the stepper, never in the word.
+fn trim_unit_words(n: u32) -> (&'static str, &'static str) {
+    let en = if n == 1 { "second" } else { "seconds" };
+    let ar = match n {
+        1 => "ثانية",
+        2 => "ثانيتان",
+        _ => {
+            let hundred = n % 100;
+            if (3..=10).contains(&hundred) {
+                "ثوانٍ" // few
+            } else if (11..=99).contains(&hundred) {
+                "ثانيةً" // many
+            } else {
+                "ثانية" // zero / other
+            }
+        }
+    };
+    (en, ar)
+}
+
+/// Pack cards: probed duration (unknown → "" → غير متاح), the selected
+/// (default) pack, Arabic name only when the manifest actually carries one.
+fn pack_rows(packs: &[InstalledPack], default_pack: Option<&str>) -> Vec<PackRow> {
+    let selected = default_pack
+        .filter(|id| packs.iter().any(|pack| pack.id == *id))
+        .or_else(|| packs.first().map(|pack| pack.id.as_str()));
+    packs
+        .iter()
+        .map(|pack| PackRow {
+            id: pack.id.clone().into(),
+            name: pack.manifest.name.clone().into(),
+            name_ar: pack.manifest.name_ar.clone().unwrap_or_default().into(),
+            reciter: pack.manifest.reciter.clone().into(),
+            license: pack.manifest.license.clone().into(),
+            duration: routing::pack_duration_ms(pack)
+                .map(routing::format_duration_ms)
+                .unwrap_or_default()
+                .into(),
+            is_bundled: pack.bundled,
+            is_selected: selected == Some(pack.id.as_str()),
+        })
+        .collect()
+}
+
+/// The voice picker options: Default first, then every installed pack.
+/// The built-in chime appears only in the chime picker. An Arabic label
+/// never carries Latin text — absent name_ar means an empty Arabic run.
+fn voice_options(packs: &[InstalledPack], include_builtin_chime: bool) -> Vec<VoiceOption> {
+    let mut options = vec![VoiceOption {
+        id: SharedString::new(),
+        label: "Default".into(),
+        label_ar: "الافتراضي".into(),
+        pack_name: SharedString::new(),
+    }];
+    if include_builtin_chime {
+        options.push(VoiceOption {
+            id: routing::BUILTIN_CHIME_ID.into(),
+            label: "Alert chime".into(),
+            label_ar: "نغمة التنبيه".into(),
+            pack_name: SharedString::new(),
+        });
+    }
+    for pack in packs {
+        options.push(VoiceOption {
+            id: pack.id.clone().into(),
+            label: pack.manifest.name.clone().into(),
+            label_ar: pack.manifest.name_ar.clone().unwrap_or_default().into(),
+            pack_name: pack.manifest.reciter.clone().into(),
+        });
+    }
+    options
+}
+
+/// One row per voiced event: the explicit choice (or Default), the
+/// effective mode, whether an override exists, and whether any voice can
+/// actually sound (the honest empty state).
+fn event_voice_rows(packs: &[InstalledPack], audio: &AudioSettings) -> Vec<EventVoiceRow> {
+    const EVENTS: [(&str, &str, &str); 4] = [
+        (routing::EVENT_ATHAN, "Adhan", "الأذان"),
+        (routing::EVENT_IQAMAH, "Iqamah", "الإقامة"),
+        (routing::EVENT_ATHKAR, "Athkar", "الأذكار"),
+        (routing::EVENT_CHIME, "Alert chime", "نغمة التنبيه"),
+    ];
+    EVENTS
+        .iter()
+        .map(|(kind, label, label_ar)| {
+            let choice = audio
+                .event_voices
+                .get(*kind)
+                .and_then(|voice| voice.pack.clone());
+            let resolved = routing::resolve_voice(kind, audio, packs);
+            // The pill names the explicit choice; a choice whose pack was
+            // removed reports the fallback honestly (Default), never silent.
+            let mut voice_id = choice.clone().unwrap_or_default();
+            let (voice_label, voice_label_ar) = match choice.as_deref() {
+                Some(routing::BUILTIN_CHIME_ID) => {
+                    ("Alert chime".to_string(), "نغمة التنبيه".to_string())
+                }
+                Some(id) => match packs.iter().find(|pack| pack.id == id) {
+                    Some(pack) => (
+                        pack.manifest.name.clone(),
+                        pack.manifest.name_ar.clone().unwrap_or_default(),
+                    ),
+                    None => {
+                        voice_id = String::new();
+                        ("Default".to_string(), "الافتراضي".to_string())
+                    }
+                },
+                None => ("Default".to_string(), "الافتراضي".to_string()),
+            };
+            let mode = match &resolved {
+                Some(ResolvedVoice::Pack { mode, .. }) => *mode,
+                _ => PlaybackMode::Sequential,
+            };
+            EventVoiceRow {
+                kind: (*kind).into(),
+                label: (*label).into(),
+                label_ar: (*label_ar).into(),
+                voice_id: voice_id.into(),
+                voice_label: voice_label.into(),
+                voice_label_ar: voice_label_ar.into(),
+                mode: match mode {
+                    PlaybackMode::Sequential => "sequential",
+                    PlaybackMode::Shuffle => "shuffle",
+                }
+                .into(),
+                has_override: routing::has_mode_override(kind, audio),
+                has_voice: resolved.is_some(),
+            }
+        })
+        .collect()
+}
+
+/// How long a preview will play, when every clip's probed duration is
+/// known — `None` means no auto-stop guess is possible (honest).
+fn preview_duration_ms(plan: &PlaybackPlan, packs: &[InstalledPack]) -> Option<u64> {
+    match plan {
+        PlaybackPlan::Chime => Some((tawadu_audio::chime::CHIME_SECONDS * 1000.0) as u64),
+        PlaybackPlan::Clips(clips) => {
+            let mut total = 0u64;
+            for clip in clips {
+                let pack = packs.iter().find(|pack| pack.id == clip.pack_id)?;
+                let duration = pack.durations_ms.get(&clip.rel).copied().flatten()?;
+                total = total.checked_add(playable_ms(duration, &clip.edit, clip.stop_after_ms))?;
+            }
+            Some(total)
+        }
+    }
 }
 
 impl AppState {
@@ -930,15 +1318,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 dir.join("voices"),
                 dir.join("audio-cache"),
             )));
-            let floor = Arc::clone(&library);
-            if let Err(error) = std::thread::Builder::new()
-                .name("tawadu-audio-floor".into())
-                .spawn(move || {
-                    floor.lock().unwrap().install_bundled();
-                })
-            {
-                log::warn!("could not spawn bundled-pack materialization: {error}");
-            }
             (Some(library), Some(AudioEngine::spawn()))
         }
         None => {
@@ -975,6 +1354,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     apply_settings(&ui, &state.lock().unwrap());
     if let Some(message) = &warning {
         ui.set_status_message(message.clone().into());
+    }
+
+    // Materialize the bundled floor in the background, then refresh the
+    // band when it lands: first-run duration probing never blocks the UI,
+    // and the packs appear as soon as they are really installed.
+    {
+        let library = state.lock().unwrap().library.clone();
+        if let Some(library) = library {
+            let weak = ui.as_weak();
+            let refresh_state = Arc::clone(&state);
+            if let Err(error) = std::thread::Builder::new()
+                .name("tawadu-audio-floor".into())
+                .spawn(move || {
+                    library.lock().unwrap().install_bundled();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = weak.upgrade() {
+                            let state = refresh_state.lock().unwrap();
+                            apply_audio(&ui, &state);
+                        }
+                    });
+                })
+            {
+                log::warn!("could not spawn bundled-pack materialization: {error}");
+            }
+        }
     }
 
     // ---- tray (ADR 0002) ----
@@ -1379,6 +1783,267 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    // ---- audio callbacks ----
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_import_pack_file(move || {
+            spawn_import(Arc::clone(&state), weak.clone(), false);
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_import_pack_folder(move || {
+            spawn_import(Arc::clone(&state), weak.clone(), true);
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_preview_pack(move |id: SharedString| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let state = state.lock().unwrap();
+            // One preview at a time: clicking the active card stops it.
+            if ui.get_previewing_pack_id() == id {
+                if let Some(engine) = &state.engine {
+                    engine.stop();
+                }
+                ui.set_previewing_pack_id(SharedString::new());
+                return;
+            }
+            let (Some(engine), Some(library)) = (&state.engine, &state.library) else {
+                return;
+            };
+            let lib = library.lock().unwrap();
+            // Preview plays THIS pack with the current trim/fade/volume —
+            // exactly what the event will sound like (Prism §3).
+            let mut audio = state.settings.audio.clone();
+            let mode_override = audio
+                .event_voices
+                .get(routing::EVENT_ATHAN)
+                .and_then(|voice| voice.mode_override);
+            audio.event_voices.insert(
+                routing::EVENT_ATHAN.into(),
+                EventVoice {
+                    pack: Some(id.to_string()),
+                    mode_override,
+                },
+            );
+            let Some(plan) = engine::plan_for_event(routing::EVENT_ATHAN, &audio, lib.packs())
+            else {
+                return;
+            };
+            engine.play(PlayRequest {
+                plan: plan.clone(),
+                volume: state.settings.athan_volume,
+                library_dir: lib.dir().to_path_buf(),
+                cache_dir: lib.cache_root().to_path_buf(),
+            });
+            ui.set_previewing_pack_id(id.clone());
+            // Auto-clear the Stop state when the preview's real probed
+            // length is known; unknown length → the user stops it (honest).
+            if let Some(ms) = preview_duration_ms(&plan, lib.packs()) {
+                let weak = weak.clone();
+                let id = id.to_string();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(ms + 300));
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = weak.upgrade() {
+                            if ui.get_previewing_pack_id().as_str() == id {
+                                ui.set_previewing_pack_id(SharedString::new());
+                            }
+                        }
+                    });
+                });
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_remove_pack(move |id: SharedString| {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            let mut state = state.lock().unwrap();
+            let Some(library) = state.library.clone() else {
+                return;
+            };
+            let name = library
+                .lock()
+                .unwrap()
+                .packs()
+                .iter()
+                .find(|pack| pack.id == id.as_str())
+                .map(|pack| pack.manifest.name.clone());
+            let removed = library.lock().unwrap().remove(&id);
+            match removed {
+                Ok(true) => {
+                    let name = name.unwrap_or_else(|| id.to_string());
+                    // Never silent: assigned events fall back (routing),
+                    // and the status line says so (Prism §3).
+                    let affected = state.settings.audio.default_pack.as_deref()
+                        == Some(id.as_str())
+                        || state
+                            .settings
+                            .audio
+                            .event_voices
+                            .values()
+                            .any(|voice| voice.pack.as_deref() == Some(id.as_str()));
+                    state.status = if affected {
+                        format!("Removed {name}. Assigned events fall back to the default voice.")
+                    } else {
+                        format!("Removed {name}.")
+                    };
+                    if ui.get_previewing_pack_id() == id {
+                        if let Some(engine) = &state.engine {
+                            engine.stop();
+                        }
+                        ui.set_previewing_pack_id(SharedString::new());
+                    }
+                    state.changed();
+                    apply_audio(&ui, &state);
+                    ui.set_status_message(state.status.clone().into());
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    state.status = format!("Could not remove: {error}");
+                    ui.set_status_message(state.status.clone().into());
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_show_attribution(move |_id: SharedString| {
+            if let Some(ui) = weak.upgrade() {
+                let state = state.lock().unwrap();
+                apply_credits(&ui, &state);
+                ui.set_page("credits".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_close_credits(move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_page("settings".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_pick_event_voice(move |kind: SharedString, id: SharedString| {
+            let mut state = state.lock().unwrap();
+            let voice = state
+                .settings
+                .audio
+                .event_voices
+                .entry(kind.to_string())
+                .or_default();
+            voice.pack = if id.is_empty() {
+                None
+            } else {
+                Some(id.to_string())
+            };
+            if let Some(ui) = weak.upgrade() {
+                state.changed();
+                apply_audio(&ui, &state);
+                ui.set_expanded_event(SharedString::new());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_set_event_mode(move |kind: SharedString, mode: SharedString| {
+            let mut state = state.lock().unwrap();
+            if let Some(mode) = decode::<PlaybackMode>(&mode) {
+                state
+                    .settings
+                    .audio
+                    .event_voices
+                    .entry(kind.to_string())
+                    .or_default()
+                    .mode_override = Some(mode);
+            }
+            if let Some(ui) = weak.upgrade() {
+                state.changed();
+                apply_audio(&ui, &state);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_reset_event_mode(move |kind: SharedString| {
+            let mut state = state.lock().unwrap();
+            routing::reset_mode_override(&kind, &mut state.settings.audio);
+            if let Some(ui) = weak.upgrade() {
+                state.changed();
+                apply_audio(&ui, &state);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_toggle_event_expanded(move |kind: SharedString| {
+            if let Some(ui) = weak.upgrade() {
+                // Only one row expanded at a time (Prism §4).
+                let next = if ui.get_expanded_event() == kind {
+                    SharedString::new()
+                } else {
+                    kind
+                };
+                ui.set_expanded_event(next);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_set_audio_volume(move |value: i32| {
+            let mut state = state.lock().unwrap();
+            let value = value.clamp(0, 100);
+            state.settings.athan_volume = value as f32 / 100.0;
+            if let Some(engine) = &state.engine {
+                engine.set_volume(state.settings.athan_volume);
+            }
+            if let Some(ui) = weak.upgrade() {
+                ui.set_audio_volume(value);
+                state.changed();
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_set_athan_trim(move |value: i32| {
+            let mut state = state.lock().unwrap();
+            state.settings.audio.athan_stop_after_s = value.clamp(0, 300) as u32;
+            if let Some(ui) = weak.upgrade() {
+                state.changed();
+                apply_audio(&ui, &state);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_dismiss_audio_message(move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_audio_message(SharedString::new());
+                ui.set_audio_message_ar(SharedString::new());
+                ui.set_audio_message_arg(SharedString::new());
+                ui.set_audio_message_ar_after(SharedString::new());
+            }
+        });
+    }
+
     // ---- notification engine ----
     let (notice_tx, notice_rx) = mpsc::channel::<Notice>();
     spawn_scheduler(Arc::clone(&state), wake_rx, notice_tx);
@@ -1625,6 +2290,160 @@ mod tests {
         assert_eq!(voice_event(EventKind::Prayer), routing::EVENT_ATHAN);
         assert_eq!(voice_event(EventKind::Iqamah), routing::EVENT_IQAMAH);
         assert_eq!(voice_event(EventKind::AthkarWindow), routing::EVENT_ATHKAR);
+    }
+
+    // ---- audio UI row builders ----
+
+    fn ui_pack(id: &str, name_ar: Option<&str>, duration: Option<u64>) -> InstalledPack {
+        let ar = name_ar
+            .map(|ar| format!(", \"name_ar\": \"{ar}\""))
+            .unwrap_or_default();
+        let json = format!(
+            r#"{{
+                "format": "tawadu-pack/1",
+                "name": "{id}",
+                "reciter": "A Reciter"{ar},
+                "license": "CC0-1.0",
+                "files": {{ "athan/a.ogg": {{ "sha256": "aa", "license": "CC0-1.0" }} }},
+                "sequences": {{ "fajr": {{ "mode": "sequential", "clips": ["athan/a.ogg"] }} }}
+            }}"#
+        );
+        let manifest = tawadu_audio::manifest::Manifest::parse(&json).expect("manifest");
+        let mut durations_ms = std::collections::BTreeMap::new();
+        durations_ms.insert("athan/a.ogg".to_string(), duration);
+        InstalledPack {
+            id: id.into(),
+            manifest,
+            durations_ms,
+            bundled: false,
+        }
+    }
+
+    #[test]
+    fn trim_plural_follows_cldr_arabic_categories() {
+        assert_eq!(trim_unit_words(1), ("second", "ثانية"));
+        assert_eq!(trim_unit_words(2), ("seconds", "ثانيتان"));
+        assert_eq!(trim_unit_words(5), ("seconds", "ثوانٍ")); // few: 3..10
+        assert_eq!(trim_unit_words(10), ("seconds", "ثوانٍ"));
+        assert_eq!(trim_unit_words(15), ("seconds", "ثانيةً")); // many: 11..99
+        assert_eq!(trim_unit_words(95), ("seconds", "ثانيةً"));
+        assert_eq!(trim_unit_words(100), ("seconds", "ثانية")); // other
+        assert_eq!(trim_unit_words(105), ("seconds", "ثوانٍ")); // 105 % 100 = 5
+        assert_eq!(trim_unit_words(0), ("seconds", "ثانية"));
+    }
+
+    #[test]
+    fn pack_rows_show_probed_duration_or_nothing() {
+        let packs = [
+            ui_pack("known", None, Some(154_018)),
+            ui_pack("unknown", None, None),
+        ];
+        let rows = pack_rows(&packs, None);
+        assert_eq!(rows[0].duration.as_str(), "2:34");
+        assert_eq!(rows[1].duration.as_str(), "", "unknown is never a guess");
+        assert_eq!(rows[0].name_ar.as_str(), "", "no machine translation");
+    }
+
+    #[test]
+    fn pack_rows_select_the_marked_default_else_the_first() {
+        let packs = [
+            ui_pack("first", None, Some(1000)),
+            ui_pack("second", None, Some(1000)),
+        ];
+        let rows = pack_rows(&packs, None);
+        assert!(rows[0].is_selected);
+        assert!(!rows[1].is_selected);
+        let rows = pack_rows(&packs, Some("second"));
+        assert!(!rows[0].is_selected);
+        assert!(rows[1].is_selected);
+        // A marked default that no longer exists falls back to the first.
+        let rows = pack_rows(&packs, Some("gone"));
+        assert!(rows[0].is_selected);
+    }
+
+    #[test]
+    fn voice_options_start_with_default_and_keep_scripts_separate() {
+        let packs = [
+            ui_pack("latin-only", None, Some(1000)),
+            ui_pack("bilingual", Some("حزمة"), Some(1000)),
+        ];
+        let options = voice_options(&packs, false);
+        assert_eq!(options[0].id.as_str(), "");
+        assert_eq!(options[0].label.as_str(), "Default");
+        assert_eq!(options[0].label_ar.as_str(), "الافتراضي");
+        assert_eq!(
+            options[1].label_ar.as_str(),
+            "",
+            "Latin never leaks into the Arabic run"
+        );
+        assert_eq!(options[2].label_ar.as_str(), "حزمة");
+        assert!(!options
+            .iter()
+            .any(|o| o.id.as_str() == routing::BUILTIN_CHIME_ID));
+        let chime = voice_options(&packs, true);
+        assert!(chime
+            .iter()
+            .any(|o| o.id.as_str() == routing::BUILTIN_CHIME_ID));
+    }
+
+    #[test]
+    fn event_rows_report_choice_mode_override_and_empty_state() {
+        let packs = [ui_pack("p", None, Some(1000))];
+        let mut audio = AudioSettings::default();
+        let rows = event_voice_rows(&packs, &audio);
+        assert_eq!(rows.len(), 4);
+        assert_eq!(rows[0].voice_label.as_str(), "Default");
+        assert!(rows[0].has_voice);
+        // Athkar: the pack has no athkar clips → honest empty state.
+        let athkar = rows.iter().find(|r| r.kind.as_str() == "athkar").unwrap();
+        assert!(!athkar.has_voice);
+        // The chime always has the built-in floor.
+        let chime = rows.iter().find(|r| r.kind.as_str() == "chime").unwrap();
+        assert!(chime.has_voice);
+
+        audio.event_voices.insert(
+            "athan".into(),
+            EventVoice {
+                pack: Some("p".into()),
+                mode_override: Some(PlaybackMode::Shuffle),
+            },
+        );
+        let rows = event_voice_rows(&packs, &audio);
+        let athan = &rows[0];
+        assert_eq!(athan.voice_id.as_str(), "p");
+        assert_eq!(athan.voice_label.as_str(), "p");
+        assert_eq!(athan.mode.as_str(), "shuffle");
+        assert!(athan.has_override);
+
+        // A removed choice reports the fallback honestly: Default.
+        audio.event_voices.insert(
+            "athan".into(),
+            EventVoice {
+                pack: Some("gone".into()),
+                mode_override: None,
+            },
+        );
+        let rows = event_voice_rows(&packs, &audio);
+        assert_eq!(rows[0].voice_label.as_str(), "Default");
+        assert_eq!(rows[0].voice_id.as_str(), "");
+    }
+
+    #[test]
+    fn preview_duration_is_known_only_when_every_clip_is_known() {
+        let packs = [ui_pack("p", None, Some(60_000))];
+        let audio = AudioSettings {
+            athan_stop_after_s: 30,
+            ..AudioSettings::default()
+        };
+        let plan = engine::plan_for_event(routing::EVENT_ATHAN, &audio, &packs).unwrap();
+        assert_eq!(preview_duration_ms(&plan, &packs), Some(30_000));
+        assert_eq!(
+            preview_duration_ms(&PlaybackPlan::Chime, &packs),
+            Some(1_600)
+        );
+        let unknown = [ui_pack("p", None, None)];
+        let plan = engine::plan_for_event(routing::EVENT_ATHAN, &audio, &unknown).unwrap();
+        assert_eq!(preview_duration_ms(&plan, &unknown), None);
     }
 
     #[test]
