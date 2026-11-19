@@ -7,7 +7,10 @@
 //! nothing in `.slint` persists anything by itself.
 
 mod cli;
+mod restore;
+mod tray;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -498,6 +501,27 @@ fn now() -> DateTime<Utc> {
 /// The scheduler never sleeps longer than this, so a clock change, a wake from
 /// sleep or a settings edit is picked up within a minute.
 const MAX_SLICE: Duration = Duration::from_secs(60);
+
+/// Parse the debug slice override. Unset, invalid or zero = the production
+/// 60 s — a zero slice would busy-loop the scheduler thread.
+fn parse_slice_ms(value: Option<&str>) -> Duration {
+    value
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|&ms| ms > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(MAX_SLICE)
+}
+
+/// The scheduler's max sleep slice, read once. `TAWADU_DEBUG_MAX_SLICE_MS`
+/// overrides it for the exit test: the slice is REAL time, so at debug scale
+/// 12 a 60 s slice advances the debug clock 720 s — past the 120 s late
+/// tolerance — and every event is silently dropped. A 5 s slice (60 debug-s)
+/// keeps the scale-12 exit test runnable in ~2 minutes. Off by default.
+fn max_slice() -> Duration {
+    static SLICE: OnceLock<Duration> = OnceLock::new();
+    *SLICE
+        .get_or_init(|| parse_slice_ms(std::env::var("TAWADU_DEBUG_MAX_SLICE_MS").ok().as_deref()))
+}
 /// An event the machine slept through is still worth announcing, but only just.
 const LATE_TOLERANCE_SECONDS: i64 = 120;
 /// How long the in-app banner stays up.
@@ -536,18 +560,35 @@ fn announce(
     event: &scheduler::Event,
     location: &Location,
     settings: &Settings,
+    now: DateTime<Utc>,
 ) -> Option<(String, String)> {
     let kind = event_kind(event.kind)?;
-    let local_now = location.local(now());
+    let local_now = location.local(now);
     if !notify::should_notify(kind, &settings.notifications, local_now.time()) {
         return None;
     }
     let at = location.local(event.at).format("%H:%M").to_string();
     let (title, body) = match kind {
-        NotificationKind::PreAlert => (
-            format!("{} in {} min", event.label, settings.pre_alert_minutes),
-            format!("{} at {} · {}", event.label, at, location.name),
-        ),
+        NotificationKind::PreAlert => {
+            // The alert fires pre_alert_minutes BEFORE the prayer; show the
+            // prayer's own time (exact by construction: scheduler::build
+            // places the alert at prayer_at - pre_alert_minutes), and floor
+            // the LIVE remaining minutes so a late fire never contradicts
+            // the countdown ("in 10 min" next to 00:09:50).
+            let prayer_at =
+                event.at + chrono::Duration::minutes(i64::from(settings.pre_alert_minutes));
+            let minutes = (prayer_at - now).num_minutes().max(0);
+            let title = if minutes == 0 {
+                format!("{} now", event.label)
+            } else {
+                format!("{} in {} min", event.label, minutes)
+            };
+            let prayer_time = location.local(prayer_at).format("%H:%M");
+            (
+                title,
+                format!("{} at {} · {}", event.label, prayer_time, location.name),
+            )
+        }
         NotificationKind::Athan => (
             format!("Athan · {}", event.label),
             format!("It is time for {} prayer · {}", event.label, at),
@@ -568,12 +609,14 @@ fn announce(
 /// Send an OS notification. Returns `false` when the platform has no usable
 /// notification service; the in-app banner then carries the message.
 fn os_notify(title: &str, body: &str) -> bool {
-    match notify_rust::Notification::new()
-        .appname("Tawadu")
-        .summary(title)
-        .body(body)
-        .show()
-    {
+    let mut notification = notify_rust::Notification::new();
+    notification.appname("Tawadu").summary(title).body(body);
+    // Windows: attribute the toast to our registered AUMID instead of
+    // notify-rust's PowerShell default (ADR 0002 condition 3). `app_id` is a
+    // Windows-only method in notify-rust 4 — it does not exist on macOS.
+    #[cfg(target_os = "windows")]
+    notification.app_id(tray::AUMID);
+    match notification.show() {
         Ok(_) => true,
         Err(error) => {
             log::warn!("OS notification unavailable ({error}); the in-app banner carried it");
@@ -595,6 +638,9 @@ fn spawn_scheduler(
     std::thread::Builder::new()
         .name("tawadu-scheduler".into())
         .spawn(move || {
+            // Read once: the slice is a debug-clock testing knob, not a
+            // setting that changes mid-run.
+            let max_slice = max_slice();
             // The instant up to which every event has been considered. It only
             // advances after a sweep, which is what stops a machine that slept past
             // several events from hiding all but the one it was waiting on.
@@ -610,8 +656,8 @@ fn spawn_scheduler(
                 let wait = next
                     .as_ref()
                     .map(|event| (event.at - watermark).to_std().unwrap_or(Duration::ZERO))
-                    .unwrap_or(MAX_SLICE)
-                    .min(MAX_SLICE);
+                    .unwrap_or(max_slice)
+                    .min(max_slice);
 
                 match wake.recv_timeout(wait) {
                     Ok(()) => {}
@@ -625,13 +671,22 @@ fn spawn_scheduler(
                     fired_at,
                     chrono::Duration::seconds(LATE_TOLERANCE_SECONDS),
                 ) {
-                    if let Some((title, body)) = announce(&event, &location, &settings) {
+                    if let Some((title, body)) = announce(&event, &location, &settings, now()) {
                         log::info!("firing {} · {} — {}", event.kind.key(), event.at, title);
                         let _ = notices.send(Notice::Banner {
                             title: title.clone(),
                             body: body.clone(),
                         });
-                        os_notify(&title, &body);
+                        // OS delivery must NEVER block the scheduler:
+                        // notify-rust's macOS backend waits for a click by
+                        // default (nsusernotifications.rs wait_for_click),
+                        // which froze the loop after the first alert on CI.
+                        // Toasts are secondary — the banner above is the
+                        // correctness floor. Events are rare; a thread per
+                        // toast costs nothing.
+                        std::thread::spawn(move || {
+                            os_notify(&title, &body);
+                        });
                     }
                 }
                 watermark = fired_at;
@@ -671,11 +726,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if !claim_single_instance() {
-        eprintln!("Tawadu is already running.");
+        // ADR 0002 condition 5: restore the existing (possibly hidden) window
+        // instead of printing into the void.
+        if restore::signal_existing() {
+            eprintln!("Tawadu is already running — restoring its window.");
+        } else {
+            eprintln!("Tawadu is already running.");
+        }
         return Ok(());
     }
 
     env_logger::init();
+    // Before any toast: attribute notifications to Tawadu, not PowerShell.
+    tray::register_aumid();
     log::info!("Tawadu starting (core v{})", tawadu_core::VERSION);
 
     let storage = Storage::open_default();
@@ -715,11 +778,90 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     state.lock().unwrap().wake = Some(Arc::new(wake_tx));
 
     let ui = MainWindow::new()?;
+    // ADR 0002: hide() drops the window's keepalive; without this held
+    // KeepAlive the event loop would quit on the first close-to-tray. The
+    // type is not nameable from the facade — a main() local for the app
+    // lifetime, dropped only when main returns after Quit.
+    let _keepalive = tray::hold_event_loop()?;
     apply_theme(&ui, state.lock().unwrap().settings.theme);
     apply_home(&ui, &state.lock().unwrap());
     apply_settings(&ui, &state.lock().unwrap());
     if let Some(message) = &warning {
         ui.set_status_message(message.clone().into());
+    }
+
+    // ---- tray (ADR 0002) ----
+    let hidden = Arc::new(AtomicBool::new(false));
+    let initial_target = {
+        let guard = state.lock().unwrap();
+        let location = guard.location();
+        let (times, _) = day(&location, &guard.settings);
+        next_prayer(&times, &location, &guard.settings)
+    };
+    let initial_tooltip = match initial_target {
+        Some((prayer, at)) => {
+            let location = state.lock().unwrap().location();
+            tray::tooltip_text(Some((prayer.name_en(), &hhmm(&location, at))))
+        }
+        None => tray::tooltip_text(None),
+    };
+    let tray = match tray::build_tray(&initial_tooltip) {
+        Ok(tray) => Some(tray),
+        Err(error) => {
+            log::warn!("tray unavailable ({error}); closing will keep the window shown");
+            None
+        }
+    };
+    let tray_ok = tray.is_some();
+    {
+        let hidden = Arc::clone(&hidden);
+        ui.window().on_close_requested(move || {
+            if tray_ok {
+                hidden.store(true, Ordering::SeqCst);
+                log::info!("hidden to tray");
+            }
+            tray::close_response(tray_ok)
+        });
+    }
+    let show_window = {
+        let weak = ui.as_weak();
+        let hidden = Arc::clone(&hidden);
+        move || {
+            if let Some(ui) = weak.upgrade() {
+                if let Err(error) = ui.window().show() {
+                    log::warn!("could not show window ({error})");
+                }
+                hidden.store(false, Ordering::SeqCst);
+            }
+        }
+    };
+    {
+        let show_window = show_window.clone();
+        restore::listen(move || {
+            let show_window = show_window.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                show_window();
+                log::info!("restored window (second launch)");
+            });
+        });
+    }
+    // Tray/menu events: muda delivers them on a global channel; poll it on
+    // the UI thread (the winit backend's own muda feature stays dormant).
+    let menu_timer = Timer::default();
+    {
+        let show_window = show_window.clone();
+        menu_timer.start(TimerMode::Repeated, Duration::from_millis(250), move || {
+            while let Ok(event) = muda::MenuEvent::receiver().try_recv() {
+                match event.id().0.as_str() {
+                    "show" => show_window(),
+                    "quit" => {
+                        log::info!("quitting (tray menu)");
+                        let _ = slint::quit_event_loop();
+                    }
+                    _ => {}
+                }
+            }
+        });
     }
 
     // ---- callbacks ----
@@ -915,14 +1057,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Once a second: the countdown text only. Recompute when it runs out.
+    // The tray lives in this closure so its tooltip rides the same tick —
+    // recomputed once per prayer change, never per tick. TrayIcon is !Send
+    // (Rc<RefCell> inside), so it must stay on the UI thread.
     let handle = ui.as_weak();
     let timer = Timer::default();
-    let initial_target = {
-        let guard = state.lock().unwrap();
-        let location = guard.location();
-        let (times, _) = day(&location, &guard.settings);
-        next_prayer(&times, &location, &guard.settings)
-    };
     let timer_state = Arc::clone(&state);
     let mut target = initial_target.map(|(_, at)| at);
     timer.start(TimerMode::Repeated, Duration::from_secs(1), move || {
@@ -941,9 +1080,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Some((prayer, at)) => {
                     ui.set_next_name(prayer.name_en().to_owned().into());
                     ui.set_next_name_ar(prayer.name_ar().to_owned().into());
+                    if let Some(tray) = &tray {
+                        let _ = tray.set_tooltip(Some(tray::tooltip_text(Some((
+                            prayer.name_en(),
+                            &hhmm(&location, at),
+                        )))));
+                    }
                     target = Some(at);
                 }
-                None => target = None,
+                None => {
+                    target = None;
+                    if let Some(tray) = &tray {
+                        let _ = tray.set_tooltip(Some(tray::tooltip_text(None)));
+                    }
+                }
             }
         }
         if let Some(at) = target {
@@ -1004,6 +1154,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn_scheduler(Arc::clone(&state), wake_rx, notice_tx);
 
     let banner_handle = ui.as_weak();
+    let banner_hidden = Arc::clone(&hidden);
     let mut shown_at: Option<std::time::Instant> = None;
     let banner_timer = Timer::default();
     banner_timer.start(TimerMode::Repeated, Duration::from_millis(500), move || {
@@ -1013,6 +1164,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         while let Ok(notice) = notice_rx.try_recv() {
             match notice {
                 Notice::Banner { title, body } => {
+                    // ADR 0002 condition 2: the banner is the correctness
+                    // floor — while hidden, restore + show the window first
+                    // so the alert is never invisible.
+                    if banner_hidden.swap(false, Ordering::SeqCst) {
+                        if let Err(error) = ui.window().show() {
+                            log::warn!("could not restore window for banner ({error})");
+                        }
+                        log::info!("restored window for alert banner");
+                    }
                     ui.set_banner_title(title.into());
                     ui.set_banner_body(body.into());
                     ui.set_banner_visible(true);
@@ -1028,6 +1188,133 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    ui.run()?;
+    // macOS: Slint's winit backend creates no default app menu, so Cmd+Q is
+    // inert without one. The muda app menu's Quit item shares the tray menu's
+    // "quit" id, so the same poll handles both.
+    #[cfg(target_os = "macos")]
+    let _app_menu = tray::macos_app_menu();
+
+    // Debug lifecycle hooks for the process-level regression test
+    // (tests/tray_lifecycle.rs): dispatch the REAL close event / the REAL quit
+    // call after N ms. Off by default, like the debug clock.
+    let mut debug_timers = Vec::new();
+    if let Some(ms) = std::env::var("TAWADU_DEBUG_AUTOCLOSE_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        let weak = ui.as_weak();
+        let timer = Timer::default();
+        timer.start(
+            TimerMode::SingleShot,
+            Duration::from_millis(ms),
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    log::info!("debug: dispatching CloseRequested");
+                    ui.window()
+                        .dispatch_event(slint::platform::WindowEvent::CloseRequested);
+                }
+            },
+        );
+        debug_timers.push(timer);
+    }
+    if let Some(ms) = std::env::var("TAWADU_DEBUG_AUTOQUIT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        let timer = Timer::default();
+        timer.start(
+            TimerMode::SingleShot,
+            Duration::from_millis(ms),
+            move || {
+                log::info!("debug: quitting event loop");
+                let _ = slint::quit_event_loop();
+            },
+        );
+        debug_timers.push(timer);
+    }
+
+    // Sentinel hardening: a platform event-loop failure must be visible at
+    // app level, not just propagate as main's Err.
+    if let Err(error) = ui.run() {
+        log::error!("event loop failed: {error}");
+        return Err(error.into());
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn slice_override_defaults_to_production_sixty_seconds() {
+        assert_eq!(parse_slice_ms(None), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn slice_override_accepts_milliseconds() {
+        assert_eq!(parse_slice_ms(Some("5000")), Duration::from_secs(5));
+        assert_eq!(parse_slice_ms(Some("250")), Duration::from_millis(250));
+    }
+
+    #[test]
+    fn slice_override_rejects_garbage_and_zero() {
+        assert_eq!(parse_slice_ms(Some("garbage")), Duration::from_secs(60));
+        assert_eq!(parse_slice_ms(Some("")), Duration::from_secs(60));
+        // A zero slice would busy-loop the scheduler thread.
+        assert_eq!(parse_slice_ms(Some("0")), Duration::from_secs(60));
+    }
+
+    fn riyadh() -> tawadu_core::locations::Location {
+        find_city("Riyadh").expect("Riyadh in the city DB")
+    }
+
+    fn pre_alert(at: DateTime<Utc>) -> scheduler::Event {
+        scheduler::Event {
+            kind: EventKind::PreAlert,
+            label: "Fajr",
+            at,
+        }
+    }
+
+    #[test]
+    fn pre_alert_body_shows_the_prayer_time_not_the_alert_time() {
+        let settings = Settings::default(); // pre_alert_minutes = 10
+        let event = pre_alert("2026-11-19T01:41:00Z".parse().unwrap());
+        let (_, body) = announce(&event, &riyadh(), &settings, event.at).expect("announced");
+        // The prayer is 01:51Z = 04:51 Riyadh; the alert itself is 04:41.
+        assert_eq!(body, "Fajr at 04:51 · Riyadh");
+    }
+
+    #[test]
+    fn pre_alert_headline_floors_the_live_remaining_minutes() {
+        let settings = Settings::default();
+        let event = pre_alert("2026-11-19T01:41:00Z".parse().unwrap());
+        // Fired 90 s late: 8 min 30 s remain, not the static "10 min".
+        let now = event.at + chrono::Duration::seconds(90);
+        let (title, _) = announce(&event, &riyadh(), &settings, now).expect("announced");
+        assert_eq!(title, "Fajr in 8 min");
+    }
+
+    #[test]
+    fn pre_alert_headline_says_now_when_under_a_minute_remains() {
+        let settings = Settings::default();
+        let event = pre_alert("2026-11-19T01:41:00Z".parse().unwrap());
+        let now = event.at + chrono::Duration::seconds(9 * 60 + 30);
+        let (title, _) = announce(&event, &riyadh(), &settings, now).expect("announced");
+        assert_eq!(title, "Fajr now");
+    }
+
+    #[test]
+    fn athan_copy_names_the_prayer_and_its_time() {
+        let settings = Settings::default();
+        let event = scheduler::Event {
+            kind: EventKind::Prayer,
+            label: "Fajr",
+            at: "2026-11-19T01:51:00Z".parse().unwrap(),
+        };
+        let (title, body) = announce(&event, &riyadh(), &settings, event.at).expect("announced");
+        assert_eq!(title, "Athan · Fajr");
+        assert_eq!(body, "It is time for Fajr prayer · 04:51");
+    }
 }

@@ -29,10 +29,18 @@ rubato = "0.15"
 # --- async ---
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "fs"] }
 # --- ui ---
-slint = "1"
+# Pinned per ADR 0002: the KeepAlive adapter uses slint::private_unstable_api,
+# which is public but marked unstable — a minor bump could move it.
+slint = "=1.19.0"
 # --- desktop integration ---
 notify-rust = "4"
-# tray-icon, auto-launch, single-instance, rfd, global-hotkey
+# tray-icon + own muda dep (ADR 0002). tray-icon 0.26 uses muda ^0.21, so both
+# share one muda copy. Do NOT enable the winit backend's dormant muda feature.
+# ksni = pure-Rust StatusNotifier tray on Linux (no GTK/appindicator system deps).
+tray-icon = { version = "0.26", default-features = false, features = ["ksni"] }
+# muda's DEFAULT features enable gtk3 on Linux — off, or glib-sys drags GTK
+# into the build despite ksni. tray-icon's ksni feature adds muda/snapshot.
+muda = { version = "0.21", default-features = false }
 single-instance = "0.3"
 # --- misc ---
 log = "0.4"
