@@ -9,7 +9,7 @@ use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
 
 /// Current schema version. Bump on every migration.
-pub const SCHEMA_VERSION: i32 = 2;
+pub const SCHEMA_VERSION: i32 = 3;
 
 /// The result of loading settings, with every case kept distinct.
 ///
@@ -101,6 +101,14 @@ impl Storage {
                  prayer TEXT NOT NULL,
                  at TEXT NOT NULL,
                  PRIMARY KEY (kind, prayer, at)
+             );
+             CREATE TABLE IF NOT EXISTS athkar_progress (
+                 context TEXT NOT NULL,
+                 category INTEGER NOT NULL,
+                 item INTEGER NOT NULL,
+                 day TEXT NOT NULL,
+                 done INTEGER NOT NULL,
+                 PRIMARY KEY (context, category, item, day)
              );",
         )?;
         self.conn.execute(
@@ -153,6 +161,73 @@ impl Storage {
             |row| row.get(0),
         )?;
         Ok(count > 0)
+    }
+
+    /// Record one recitation of an athkar item. Increments the per-(context,
+    /// category, item, day) counter, CAPPED at the item's repeat target —
+    /// an honest tasbih: taps past completion never over-count. Returns the
+    /// new count. Old days (>30) are pruned opportunistically.
+    pub fn record_athkar_repeat(
+        &self,
+        context: &str,
+        category: u32,
+        item: u32,
+        day: &str,
+        target: u32,
+    ) -> Result<u32, rusqlite::Error> {
+        self.conn.execute(
+            "INSERT INTO athkar_progress (context, category, item, day, done)
+             VALUES (?1, ?2, ?3, ?4, 1)
+             ON CONFLICT(context, category, item, day)
+             DO UPDATE SET done = MIN(done + 1, ?5)",
+            params![context, category, item, day, target],
+        )?;
+        let done: u32 = self.conn.query_row(
+            "SELECT done FROM athkar_progress
+             WHERE context = ?1 AND category = ?2 AND item = ?3 AND day = ?4",
+            params![context, category, item, day],
+            |row| row.get(0),
+        )?;
+        self.conn.execute(
+            "DELETE FROM athkar_progress WHERE day < date('now', '-30 days')",
+            [],
+        )?;
+        Ok(done)
+    }
+
+    /// Today's progress for one context: (category, item) -> repeats done.
+    /// Day-scoped by design: a new day starts honest, never inheriting
+    /// yesterday's counts.
+    pub fn athkar_progress(
+        &self,
+        context: &str,
+        day: &str,
+    ) -> Result<std::collections::HashMap<(u32, u32), u32>, rusqlite::Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT category, item, done FROM athkar_progress
+             WHERE context = ?1 AND day = ?2",
+        )?;
+        let rows = stmt.query_map(params![context, day], |row| {
+            Ok((
+                (row.get::<_, u32>(0)?, row.get::<_, u32>(1)?),
+                row.get::<_, u32>(2)?,
+            ))
+        })?;
+        let mut map = std::collections::HashMap::new();
+        for row in rows {
+            let (key, done) = row?;
+            map.insert(key, done);
+        }
+        Ok(map)
+    }
+
+    /// Honest reset: clears ONLY the named context's progress for the day.
+    pub fn reset_athkar_context(&self, context: &str, day: &str) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "DELETE FROM athkar_progress WHERE context = ?1 AND day = ?2",
+            params![context, day],
+        )?;
+        Ok(())
     }
 
     /// Save the settings blob (single row, id = 1).
