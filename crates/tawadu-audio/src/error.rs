@@ -76,7 +76,13 @@ impl ImportError {
     /// The exact Quill strings with the placeholder substituted. English is
     /// one Latin run; Arabic is split so the file name renders in its own run.
     pub fn message(&self) -> LocalizedMessage {
-        let arg = self.file().unwrap_or_default().to_string();
+        // ManifestMissing names no file via `file()`, but Quill §5's
+        // `{ $file }` is the offending path — here the manifest itself
+        // (Sentinel F1: the body-only UI strip must name it).
+        let arg = match self {
+            ImportError::ManifestMissing => "manifest.json".to_string(),
+            _ => self.file().unwrap_or_default().to_string(),
+        };
         let (title_en, body_en, title_ar, before, after) = match self {
             ImportError::ManifestMissing => (
                 "Manifest not found",
@@ -180,6 +186,39 @@ mod tests {
         );
         // The Arabic runs must contain no Latin letter — the file name is
         // its own run (Quill §2 rule 2).
+        for run in [&msg.title_ar, &msg.body_ar_before, &msg.body_ar_after] {
+            assert!(!run.chars().any(|c| c.is_ascii_alphabetic()));
+        }
+    }
+
+    #[test]
+    fn manifest_missing_names_manifest_json_in_both_languages() {
+        // Regression (Sentinel F1): the import-error strip renders ONLY the
+        // body, so the missing file must be named there. `file()` is None
+        // for this variant; an empty arg left a leading/double space and
+        // never named the file (Quill §4.6 audio-error-manifest-missing-body,
+        // §5 `{ $file }` = the offending path, here manifest.json).
+        let msg = ImportError::ManifestMissing.message();
+        assert_eq!(
+            msg.body_en,
+            "manifest.json was not found in the pack. Choose the whole pack folder and try again."
+        );
+        assert_eq!(msg.title_ar, "ملف التعريف غير موجود");
+        assert_eq!(msg.body_ar_before, "لم يُعثر على ");
+        assert_eq!(msg.arg, "manifest.json");
+        assert_eq!(
+            msg.body_ar_after,
+            " داخل الحزمة. اختر مجلد الحزمة كاملاً ثم أعد المحاولة."
+        );
+        // The Arabic runs join around the Latin arg with single spaces.
+        let joined = format!("{}{}{}", msg.body_ar_before, msg.arg, msg.body_ar_after);
+        assert_eq!(
+            joined,
+            "لم يُعثر على manifest.json داخل الحزمة. اختر مجلد الحزمة كاملاً ثم أعد المحاولة."
+        );
+        assert!(!joined.contains("  "));
+        // No Latin letter in any Arabic run — the file name is its own run
+        // (Quill §2 rule 2).
         for run in [&msg.title_ar, &msg.body_ar_before, &msg.body_ar_after] {
             assert!(!run.chars().any(|c| c.is_ascii_alphabetic()));
         }
