@@ -630,6 +630,12 @@ fn announce(
     // a late fire (sleep/wake) must not sneak a quiet-hours alert past the
     // window, nor silence an alert whose event fell outside it. The athan
     // is essential and bypasses quiet hours entirely (should_notify).
+    //
+    // SEMANTICS (intentional — do not "fix"): PreAlert's event.at is the
+    // ALERT instant (prayer time minus pre_alert_minutes), so quiet hours
+    // bind to the alert instant, not the prayer instant. A pre-alert that
+    // falls inside quiet hours is suppressed even when the prayer itself
+    // falls outside them; that is the user's quiet window speaking.
     let event_local = location.local(event.at);
     if !notify::should_notify(kind, &settings.notifications, event_local.time()) {
         return None;
@@ -738,28 +744,34 @@ fn spawn_scheduler(
                     fired_at,
                     chrono::Duration::seconds(LATE_TOLERANCE_SECONDS),
                 );
-                // Ledger filter: per-identity skip of already-announced
-                // events (restart inside the tolerance). Read errors fail
-                // open (None -> fire): a broken ledger must never silence.
+                // Ledger filter: skip already-announced EXACT identities
+                // (kind, prayer, scheduled instant). Read errors fail open
+                // (false -> fire): a broken ledger must never silence.
                 let fireable = scheduler::fireable(due, |event| {
                     let guard = state.lock().unwrap();
-                    let last = guard.storage.as_ref().and_then(|storage| {
-                        storage
-                            .last_fired(event.kind.key(), event.label)
-                            .ok()
-                            .flatten()
-                    });
-                    if scheduler::already_fired(last, event.at) {
+                    let fired = guard
+                        .storage
+                        .as_ref()
+                        .and_then(|storage| {
+                            storage
+                                .has_fired(event.kind.key(), event.label, event.at)
+                                .ok()
+                        })
+                        .unwrap_or(false);
+                    if fired {
                         log::info!("skipping already-fired {} · {}", event.kind.key(), event.at);
                     }
-                    last
+                    fired
                 });
                 for event in fireable {
                     if let Some((title, body)) = announce(&event, &location, &settings, now()) {
                         // Transactional order: persist the fire BEFORE the
                         // announcement, so a crash after announcing can never
-                        // re-announce on restart. Write failure is logged and
-                        // fails open (the alert still goes out).
+                        // re-announce on restart. Record event.at — the
+                        // SCHEDULED instant, NEVER the fire wall-time: a late
+                        // fire recorded as wall-time would widen the dedupe
+                        // identity and suppress the true event later. Write
+                        // failure is logged and fails open (alert still goes).
                         {
                             let guard = state.lock().unwrap();
                             if let Some(storage) = guard.storage.as_ref() {
@@ -1181,7 +1193,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut state = save_state.lock().unwrap();
         if state.debounce.borrow_mut().take_if_due(Instant::now()) {
             state.save();
-            apply_settings(&ui, &state);
+            // Status feedback ONLY: a full apply_settings here could clobber
+            // a location_query typed during the debounce window (Sentinel).
+            ui.set_status_message(state.status.clone().into());
         }
     });
 

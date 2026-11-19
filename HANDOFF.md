@@ -216,16 +216,24 @@ fires the athan and iqamah while correctly dropping the stale pre-alert.
 ### Known defects, recorded but not fixed
 
 5. ~~**No fired-event ledger** — a restart within 120 s of an event re-announces it.~~
-   **RESOLVED (Steps 2–3):** schema-v2 `fired(kind, prayer, at)` ledger; the fire is
-   persisted BEFORE the announcement; `fireable` filters per identity (fail-open).
+   **RESOLVED (Steps 2–3):** schema-v2 `fired` ledger keyed on the EXACT
+   (kind, prayer, scheduled instant) triple — existence check, no range comparison,
+   so a schedule shifted by a method/location change is a NEW event (never silently
+   skipped). The fire is persisted BEFORE the announcement, recording `event.at`
+   (scheduled instant, never fire wall-time); `fireable` filters fail-open.
 6. ~~**Quiet hours are evaluated at fire time, not event time**~~ **RESOLVED
    (Steps 2–3):** judged at the event's scheduled local instant; the athan is
    essential (`is_essential()` returns before the quiet-hours check) and never suppressed.
 7. ~~**Settings save only on the حفظ button**, while Phase 1 specifies a debounced
    save-on-change. **Code and doc disagree — pick one.**~~ **RESOLVED (Steps 2–3):**
    debounced save-on-change implemented — 800 ms after the last mutation
-   (drained on a 200 ms UI tick), حفظ remains an immediate save that cancels
-   any pending debounce write.
+   (drained on a 200 ms UI tick, status-only feedback), حفظ remains an immediate
+   save that cancels any pending debounce write. Pending writes flush on quit,
+   hide-to-tray and loop exit. Residual window: a hard kill with no quit/hide
+   inside the <800 ms debounce can lose the trailing write (documented limit;
+   only write-through would close it). Quiet-hours semantics: judged at the
+   event's scheduled local instant — for PreAlert that is the ALERT instant
+   (prayer − N), intentionally, not the prayer instant.
 8. ~~**No autostart.**~~ **RESOLVED (Steps 2–3):** opt-in toggle in APPEARANCE
    (default OFF, `serde(default)` so old DBs upgrade to OFF); startup reconcile is
    idempotent and re-registers when the exe path moved (Windows HKCU Run path check).

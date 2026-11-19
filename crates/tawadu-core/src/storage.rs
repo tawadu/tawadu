@@ -5,7 +5,7 @@
 
 use crate::settings::Settings;
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
 
 /// Current schema version. Bump on every migration.
@@ -93,7 +93,7 @@ impl Storage {
                  kind TEXT NOT NULL,
                  prayer TEXT NOT NULL,
                  at TEXT NOT NULL,
-                 PRIMARY KEY (kind, prayer)
+                 PRIMARY KEY (kind, prayer, at)
              );",
         )?;
         self.conn.execute(
@@ -113,9 +113,11 @@ impl Storage {
         Ok(value.parse().unwrap_or(0))
     }
 
-    /// Record that an event was actually announced (upsert per kind+prayer).
-    /// Written on fire, so a restart inside the late tolerance does not
-    /// re-announce the same event.
+    /// Record that an event was actually announced. Identity is the EXACT
+    /// (kind, prayer, scheduled instant) triple — a schedule recomputed to a
+    /// different instant (method/location change) is a NEW event, never
+    /// suppressed by an older fire. Idempotent insert; growth is a few rows
+    /// per day.
     pub fn record_fired(
         &self,
         kind: &str,
@@ -123,33 +125,27 @@ impl Storage {
         at: DateTime<Utc>,
     ) -> Result<(), rusqlite::Error> {
         self.conn.execute(
-            "INSERT INTO fired (kind, prayer, at) VALUES (?1, ?2, ?3)
-             ON CONFLICT(kind, prayer) DO UPDATE SET at = excluded.at",
+            "INSERT OR IGNORE INTO fired (kind, prayer, at) VALUES (?1, ?2, ?3)",
             params![kind, prayer, at.to_rfc3339()],
         )?;
         Ok(())
     }
 
-    /// The last announced instant for this kind+prayer, if any. A corrupt
-    /// timestamp reads as `None` (fail open: re-announce rather than silence).
-    pub fn last_fired(
+    /// Whether this exact event identity was already announced. Existence
+    /// only — no range comparison, so a shifted schedule can never be
+    /// silently skipped.
+    pub fn has_fired(
         &self,
         kind: &str,
         prayer: &str,
-    ) -> Result<Option<DateTime<Utc>>, rusqlite::Error> {
-        let raw: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT at FROM fired WHERE kind = ?1 AND prayer = ?2",
-                params![kind, prayer],
-                |row| row.get(0),
-            )
-            .optional()?;
-        Ok(raw.and_then(|raw| {
-            DateTime::parse_from_rfc3339(&raw)
-                .ok()
-                .map(|at| at.with_timezone(&Utc))
-        }))
+        at: DateTime<Utc>,
+    ) -> Result<bool, rusqlite::Error> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM fired WHERE kind = ?1 AND prayer = ?2 AND at = ?3",
+            params![kind, prayer, at.to_rfc3339()],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
     }
 
     /// Save the settings blob (single row, id = 1).
@@ -323,26 +319,30 @@ mod tests {
         let storage = Storage::open_in_memory().unwrap();
         let at = instant("2026-11-19T01:41:00Z");
         storage.record_fired("pre_alert", "Fajr", at).unwrap();
-        assert_eq!(storage.last_fired("pre_alert", "Fajr").unwrap(), Some(at));
+        assert!(storage.has_fired("pre_alert", "Fajr", at).unwrap());
+        // Exact identity: a different instant is a different event.
+        assert!(!storage
+            .has_fired("pre_alert", "Fajr", at + chrono::Duration::seconds(1))
+            .unwrap());
     }
 
     #[test]
     fn ledger_is_empty_before_any_fire() {
         let storage = Storage::open_in_memory().unwrap();
-        assert_eq!(storage.last_fired("prayer", "Fajr").unwrap(), None);
+        let at = instant("2026-11-19T01:41:00Z");
+        assert!(!storage.has_fired("prayer", "Fajr", at).unwrap());
     }
 
     #[test]
-    fn ledger_upserts_the_latest_fire_per_identity() {
+    fn ledger_records_each_instant_and_repeats_are_idempotent() {
         let storage = Storage::open_in_memory().unwrap();
         let first = instant("2026-11-19T01:41:00Z");
         let second = instant("2026-11-20T01:42:00Z");
         storage.record_fired("pre_alert", "Fajr", first).unwrap();
+        storage.record_fired("pre_alert", "Fajr", first).unwrap();
         storage.record_fired("pre_alert", "Fajr", second).unwrap();
-        assert_eq!(
-            storage.last_fired("pre_alert", "Fajr").unwrap(),
-            Some(second)
-        );
+        assert!(storage.has_fired("pre_alert", "Fajr", first).unwrap());
+        assert!(storage.has_fired("pre_alert", "Fajr", second).unwrap());
     }
 
     #[test]
@@ -351,8 +351,24 @@ mod tests {
         let at = instant("2026-11-19T01:41:00Z");
         storage.record_fired("pre_alert", "Fajr", at).unwrap();
         // Same prayer, different kind; same kind, different prayer.
-        assert_eq!(storage.last_fired("prayer", "Fajr").unwrap(), None);
-        assert_eq!(storage.last_fired("pre_alert", "Dhuhr").unwrap(), None);
+        assert!(!storage.has_fired("prayer", "Fajr", at).unwrap());
+        assert!(!storage.has_fired("pre_alert", "Dhuhr", at).unwrap());
+    }
+
+    #[test]
+    fn ledger_schedule_shift_is_a_new_event() {
+        // Sentinel's missed-fire path: user switches method/location mid-day
+        // and Dhuhr's pre-alert recomputes EARLIER (11:28 -> 11:26 Riyadh).
+        // The stored 11:28 must NOT suppress the new 11:26 event.
+        let storage = Storage::open_in_memory().unwrap();
+        let old = instant("2026-11-19T08:28:00Z");
+        storage.record_fired("pre_alert", "Dhuhr", old).unwrap();
+        let shifted = instant("2026-11-19T08:26:00Z");
+        assert!(storage.has_fired("pre_alert", "Dhuhr", old).unwrap());
+        assert!(
+            !storage.has_fired("pre_alert", "Dhuhr", shifted).unwrap(),
+            "a shifted schedule must read as a NEW event, not be suppressed"
+        );
     }
 
     #[test]
@@ -398,7 +414,7 @@ mod tests {
         storage.record_fired("prayer", "Fajr", at).unwrap();
         drop(storage);
         let reopened = Storage::open(&path).unwrap();
-        assert_eq!(reopened.last_fired("prayer", "Fajr").unwrap(), Some(at));
+        assert!(reopened.has_fired("prayer", "Fajr", at).unwrap());
         let _ = std::fs::remove_file(&path);
     }
 }

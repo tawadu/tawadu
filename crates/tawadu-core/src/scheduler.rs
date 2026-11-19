@@ -151,26 +151,14 @@ pub fn build(times: PrayerTimes, iqamah: &IqamahOffsets, pre_alert_minutes: u32)
     Timeline { times, events }
 }
 
-/// Whether this event was already announced: the ledger holds an instant at
-/// or after the event's own instant. Exact identity is `event.at` — computed
-/// deterministically from the day, location and settings, so it is stable
-/// across restarts. Fail open (`None` → fire): a missing ledger must never
-/// silence an alert.
-pub fn already_fired(last: Option<DateTime<Utc>>, at: DateTime<Utc>) -> bool {
-    last.is_some_and(|last| last >= at)
-}
-
 /// Filter due events down to those not yet announced, consulting the ledger
-/// per event identity (kind + prayer + instant). Identities are independent:
-/// recording one fire never suppresses a different due event, so a sleep
-/// jump across several due events misses nothing.
-pub fn fireable(
-    due: Vec<Event>,
-    mut last_fired: impl FnMut(&Event) -> Option<DateTime<Utc>>,
-) -> Vec<Event> {
-    due.into_iter()
-        .filter(|event| !already_fired(last_fired(event), event.at))
-        .collect()
+/// by EXACT identity (kind + prayer + scheduled instant). A restart
+/// recomputes the same instant → dedupe holds; a schedule shifted by a
+/// method/location change is a NEW identity → never suppressed; a sleep jump
+/// across several due events misses nothing. Fail open: a ledger read error
+/// must report "not fired", never silence an alert.
+pub fn fireable(due: Vec<Event>, mut is_fired: impl FnMut(&Event) -> bool) -> Vec<Event> {
+    due.into_iter().filter(|event| !is_fired(event)).collect()
 }
 
 impl Timeline {
@@ -373,14 +361,8 @@ mod tests {
     fn fireable_skips_only_the_already_fired_identity() {
         let events = fajr_events();
         let pre = events[0].at;
-        // Restart boundary: the stored instant EQUALS event.at -> skip.
-        let kept = fireable(events, |e| {
-            if e.kind == EventKind::PreAlert {
-                Some(pre)
-            } else {
-                None
-            }
-        });
+        // Restart boundary: the ledger holds this EXACT instant -> skip.
+        let kept = fireable(events, |e| e.kind == EventKind::PreAlert && e.at == pre);
         assert_eq!(kept.len(), 2);
         assert_eq!(kept[0].kind, EventKind::Prayer);
         assert_eq!(kept[1].kind, EventKind::Iqamah);
@@ -388,33 +370,29 @@ mod tests {
 
     #[test]
     fn fireable_sleep_jump_misses_nothing_due() {
-        // A sleep jump makes several events due at once; only the one already
-        // announced is filtered — every other due event survives.
+        // A sleep jump makes several events due at once; only the identities
+        // already announced are filtered — every other due event survives.
         let events = fajr_events();
         let pre = events[0].at;
         let prayer = events[1].at;
-        let kept = fireable(events, |e| match e.kind {
-            EventKind::PreAlert => Some(pre),
-            EventKind::Prayer => Some(prayer),
-            _ => None,
+        let kept = fireable(events, |e| {
+            (e.kind == EventKind::PreAlert && e.at == pre)
+                || (e.kind == EventKind::Prayer && e.at == prayer)
         });
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].kind, EventKind::Iqamah);
         // Nothing recorded: everything due stays due.
-        let all = fireable(fajr_events(), |_| None);
+        let all = fireable(fajr_events(), |_| false);
         assert_eq!(all.len(), 3);
     }
 
     #[test]
-    fn already_fired_compares_the_ledger_instant_to_the_event() {
-        let at = Utc.with_ymd_and_hms(2026, 11, 19, 1, 41, 0).unwrap();
-        // No ledger entry: fire (fail open).
-        assert!(!already_fired(None, at));
-        // Same instant (restart inside the tolerance): skip.
-        assert!(already_fired(Some(at), at));
-        // A later fire of the same identity: this one is past — skip.
-        assert!(already_fired(Some(at + Duration::minutes(1)), at));
-        // An earlier fire (yesterday's event): today's is new — fire.
-        assert!(!already_fired(Some(at - Duration::days(1)), at));
+    fn fireable_schedule_shift_keeps_the_shifted_event() {
+        // Same kind+prayer, EARLIER recomputed instant: a new identity.
+        let mut events = fajr_events();
+        let stored = events[0].at;
+        events[0].at = stored - Duration::minutes(2);
+        let kept = fireable(events, |e| e.kind == EventKind::PreAlert && e.at == stored);
+        assert_eq!(kept.len(), 3, "the shifted pre-alert must still fire");
     }
 }

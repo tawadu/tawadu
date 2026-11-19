@@ -453,6 +453,11 @@ fn tray_lifecycle() {
     // ---- phase 5: the trailing debounced write survives abrupt exit ----
     // Touch a setting at 2.0 s (800 ms debounce pending), quit at 2.6 s —
     // BEFORE the timer fires. The quit flush must persist the change.
+    // Residual window (Sentinel's adjusted bar, documented): a HARD kill
+    // (TerminateProcess) with the window still open — no quit, no hide —
+    // inside the <800 ms debounce can still lose the trailing write; no
+    // flush-on-exit design can catch it short of write-through. Every
+    // graceful path (quit, hide-to-tray, loop exit) flushes.
     let home = fresh_config_home();
     let (mut quitter, _log) = spawn_app_in(
         &home,
