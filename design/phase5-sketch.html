@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="plaster" data-view="picker">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tawadu — Phase 5 sketch: city picker · mosques · high-latitude honesty · calendar</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&family=Amiri:wght@400;700&display=swap" rel="stylesheet">
+<style>
+/* ---- Brand tokens (design/brand.md — source of truth; same as audio sketch) ---- */
+:root, [data-theme="plaster"] {
+  --bg:#F6F1E8; --surface:#FFFDF8; --surface-2:#EFE8DB;
+  --ink:#211C15; --ink-muted:#6E665A; --border:#E2D9C9;
+  --accent:#2E5C4E; --accent-soft:#E3EEE9; --accent-ink:#FFFFFF;
+  --gold:#B08A4A;
+  --shadow:0 1px 2px rgba(33,28,21,.05),0 4px 14px rgba(33,28,21,.05);
+}
+[data-theme="ink"] {
+  --bg:#14110D; --surface:#1D1915; --surface-2:#27221C;
+  --ink:#EFE7DA; --ink-muted:#B0A697; --border:#332C24;
+  --accent:#8FC3AE; --accent-soft:#24352E; --accent-ink:#0F1A15;
+  --gold:#D0A45C;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 4px 14px rgba(0,0,0,.25);
+}
+[data-theme="ramadan"] {
+  --bg:#171209; --surface:#221A10; --surface-2:#2C2214;
+  --ink:#F3E7D3; --ink-muted:#C2B399; --border:#3A2E1C;
+  --accent:#D9A441; --accent-soft:#33270F; --accent-ink:#1A1206;
+  --gold:#D9A441; /* Ramadan: accent IS gold */
+  --shadow:0 1px 2px rgba(0,0,0,.35),0 4px 14px rgba(0,0,0,.3);
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+body { background:var(--bg); color:var(--ink);
+  font-family:"IBM Plex Sans","IBM Plex Sans Arabic",sans-serif; font-size:15px; padding:24px;
+  transition:background .26s cubic-bezier(.22,.61,.36,1),color .26s; }
+[lang="ar"] { font-family:"IBM Plex Sans Arabic","IBM Plex Sans",sans-serif; }
+.num { font-variant-numeric:tabular-nums; }
+.wrap { width:932px; max-width:100%; }
+button { font-family:inherit; }
+
+/* ---- sketch chrome ---- */
+.chrome { display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:16px;
+  padding:10px 14px; border:1px dashed var(--border); border-radius:10px; }
+.chrome .tag { font-size:11px; letter-spacing:1px; color:var(--ink-muted); font-weight:600; }
+.chrome .note { font-size:11.5px; color:var(--ink-muted); flex:1 1 240px; }
+.seg { display:flex; gap:4px; flex-wrap:wrap; }
+.seg button { font:500 12px "IBM Plex Sans"; padding:5px 12px; border-radius:999px;
+  border:1px solid var(--border); background:var(--surface); color:var(--ink); cursor:pointer; }
+.seg button[aria-pressed="true"] { background:var(--accent-soft); border-color:var(--accent); color:var(--accent); }
+.state-seg { display:none; }
+[data-view="picker"] #picker-states, [data-view="tromso"] #tromso-states,
+[data-view="calendar"] #cal-states { display:flex; }
+
+/* ---- shared primitives (audio-sketch language) ---- */
+.view { display:none; } .view.active { display:block; }
+.card { background:var(--surface); border:1px solid var(--border); border-radius:16px;
+  box-shadow:var(--shadow); padding:12px; }
+.card + .card { margin-top:14px; }
+.card-title { font-size:11px; font-weight:600; letter-spacing:1px; color:var(--ink-muted); margin-bottom:8px; }
+.cols { display:flex; gap:20px; align-items:flex-start; }
+.col-left { flex:0 0 460px; display:flex; flex-direction:column; gap:14px; }
+.col-right { flex:1; display:flex; flex-direction:column; gap:14px; }
+.col-left .card + .card, .col-right .card + .card { margin-top:0; }
+.btn { display:inline-flex; align-items:center; gap:6px; font:600 13px "IBM Plex Sans","IBM Plex Sans Arabic";
+  height:30px; padding:0 12px; border-radius:10px; border:1px solid var(--border);
+  background:var(--surface); color:var(--ink); cursor:pointer; }
+.btn.soft { background:var(--accent-soft); border-color:var(--accent); color:var(--accent); }
+.btn.primary { background:var(--accent); border-color:var(--accent); color:var(--accent-ink); }
+.btn.icon { width:30px; padding:0; justify-content:center; color:var(--ink-muted); }
+.btn svg { width:14px; height:14px; stroke:currentColor; fill:none; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
+.caption { font-size:12px; color:var(--ink-muted); }
+.status { margin-top:10px; padding:8px 12px; border-radius:10px; background:var(--surface-2);
+  border:1px solid var(--border); font-size:12.5px; color:var(--ink); }
+.status .x { float:right; cursor:pointer; color:var(--ink-muted); font-weight:600; }
+.badge { font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px;
+  border:1px solid var(--border); background:var(--surface-2); color:var(--ink-muted); }
+.badge.active { background:var(--accent-soft); border-color:var(--accent); color:var(--accent); }
+.stepper { display:inline-flex; align-items:center; gap:8px; }
+.stepper button { width:28px; height:28px; border-radius:10px; border:1px solid var(--border);
+  background:var(--surface); color:var(--ink); font-size:16px; cursor:pointer; }
+.stepper .val { width:52px; text-align:center; font-size:14px; font-weight:600; }
+.ctl-row { display:flex; align-items:center; gap:10px; padding:5px 2px; }
+.ctl-label { width:110px; font-size:13px; }
+input[type="text"], input[type="number"], select {
+  height:30px; padding:0 10px; border-radius:10px; border:1px solid var(--border);
+  background:var(--surface); color:var(--ink); font:400 13px "IBM Plex Sans","IBM Plex Sans Arabic"; outline:none; }
+input:focus, select:focus { border-color:var(--accent); }
+.gold-dot { width:6px; height:6px; border-radius:3px; background:var(--gold); display:inline-block; flex:0 0 6px; }
+.info-dot { width:6px; height:6px; border-radius:3px; background:var(--ink-muted); display:inline-block; flex:0 0 6px; }
+.expand { display:none; } .open > .expand, .expand.open { display:block; }
+
+/* ---- view 1: city picker ---- */
+.picker-head { display:flex; align-items:center; gap:12px; margin-bottom:10px; }
+.picker-head .eyebrow { font-size:11px; font-weight:600; letter-spacing:1px; color:var(--ink-muted); }
+.search-row { display:flex; gap:8px; align-items:center; }
+.search-row input { flex:1; height:36px; font-size:14px; }
+.recent { display:flex; gap:6px; align-items:center; margin:10px 0; flex-wrap:wrap; }
+.chip { font:500 12px "IBM Plex Sans","IBM Plex Sans Arabic"; padding:4px 12px; border-radius:999px;
+  border:1px solid var(--border); background:var(--surface-2); color:var(--ink); cursor:pointer; }
+.results { max-height:264px; overflow-y:auto; border:1px solid var(--border); border-radius:10px; }
+.city-row { display:flex; align-items:center; gap:10px; padding:8px 12px; cursor:pointer;
+  border-bottom:1px solid var(--border); background:var(--surface); }
+.city-row:last-child { border-bottom:none; }
+.city-row.hl { background:var(--accent-soft); }
+.city-main { flex:1; min-width:0; }
+.city-name { font-size:15px; font-weight:600; }
+.city-ar { font-size:12.5px; color:var(--ink-muted); }
+.city-sub { font-size:11.5px; color:var(--ink-muted); }
+.city-country { font-size:12.5px; color:var(--ink-muted); text-align:right; }
+.kbd-hint { font-size:11.5px; color:var(--ink-muted); margin-top:8px; }
+.kbd-hint kbd { border:1px solid var(--border); border-radius:4px; padding:0 5px; background:var(--surface-2); font-family:inherit; }
+.opt-row { display:flex; align-items:center; gap:10px; padding:9px 2px; border-top:1px solid var(--border); margin-top:10px; }
+.opt-row .txt { flex:1; } .opt-row .txt b { font-size:13.5px; } .opt-row .txt div { font-size:12px; color:var(--ink-muted); }
+.opt-row.disabled { opacity:.65; }
+.attr { margin-top:12px; padding-top:10px; border-top:1px solid var(--border); font-size:11.5px; color:var(--ink-muted); }
+.attr a { color:var(--ink-muted); }
+#no-results { display:none; padding:18px 12px; }
+#no-results b { font-size:14px; } #no-results ul { margin:8px 0 0 18px; font-size:12.5px; color:var(--ink-muted); }
+#coords-form { display:none; padding:10px 2px 2px; }
+#coords-form .row { display:flex; gap:8px; align-items:center; margin-bottom:8px; flex-wrap:wrap; }
+#coords-form label { font-size:12.5px; width:70px; }
+#coords-form input { width:130px; } #coords-form select { width:200px; }
+.field-err { font-size:12px; color:var(--ink); background:var(--surface-2); border:1px solid var(--border);
+  border-radius:8px; padding:5px 10px; display:none; }
+#gps-confirm { display:none; }
+
+/* ---- view 2: settings ---- */
+.loc-summary { display:flex; align-items:center; gap:10px; }
+.loc-summary .names { flex:1; }
+.loc-summary .en { font-size:16px; font-weight:600; color:var(--accent); }
+.loc-summary .ar { font-size:14px; font-weight:600; color:var(--accent); }
+.mosque { border:1px solid var(--border); border-radius:10px; background:var(--surface); margin-bottom:8px; }
+.mosque.active { border-color:var(--accent); background:var(--accent-soft); }
+.mosque-head { display:flex; align-items:center; gap:8px; padding:8px 10px; cursor:pointer; }
+.mosque-head .names { flex:1; } .mosque-head .en { font-size:13.5px; font-weight:600; }
+.mosque-head .ar { font-size:12px; color:var(--ink-muted); }
+.mosque-head .sum { font-size:11.5px; color:var(--ink-muted); }
+.mosque-editor { display:none; border-top:1px solid var(--border); padding:10px; }
+.mosque.editing .mosque-editor { display:block; }
+.mosque-editor .row { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
+.confirm { display:none; align-items:center; gap:6px; font-size:12px; color:var(--ink-muted); padding:0 10px 8px; }
+.mosque.confirming .confirm { display:flex; }
+.rule { border:1px solid var(--border); border-radius:10px; padding:8px 10px; margin-bottom:6px; cursor:pointer; background:var(--surface); }
+.rule.selected { border-color:var(--accent); background:var(--accent-soft); }
+.rule .rname { font-size:13.5px; font-weight:600; }
+.rule.selected .rname { color:var(--accent); }
+.rule .rdesc { font-size:12px; color:var(--ink-muted); margin-top:2px; }
+.seg-inline { display:flex; gap:6px; align-items:center; padding:5px 2px; }
+.seg-inline .lbl { width:110px; font-size:13px; }
+.pill { font:500 12px "IBM Plex Sans"; padding:4px 12px; border-radius:999px; border:1px solid var(--border);
+  background:var(--surface); color:var(--ink); cursor:pointer; }
+.pill.on { background:var(--accent-soft); border-color:var(--accent); color:var(--accent); }
+.fine-summary { font-size:12px; color:var(--ink-muted); }
+
+/* ---- view 3: Tromsø home ---- */
+.home-head { display:flex; align-items:baseline; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
+.home-head .mark { font-size:22px; font-weight:600; }
+.home-head .sub { font-size:13px; color:var(--ink-muted); }
+.home-cols { display:flex; gap:24px; align-items:flex-start; }
+.home-left { flex:0 0 420px; display:flex; flex-direction:column; gap:16px; }
+.home-right { flex:1; }
+.next-card { background:var(--surface); border:1px solid var(--border); border-radius:16px; padding:20px; }
+.next-card .eyebrow { font-size:11px; letter-spacing:1px; color:var(--accent); font-weight:600; }
+.next-card .pname { font-size:26px; font-weight:600; margin-top:4px; }
+.next-card .par { font-size:20px; color:var(--accent); }
+.next-card .count { font-size:54px; font-weight:400; margin-top:2px; }
+.mini-card { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:14px; }
+.mini-card .eyebrow { font-size:11px; letter-spacing:1px; color:var(--ink-muted); font-weight:600; }
+.mini-card .body { font-size:16px; font-weight:600; margin-top:2px; }
+.mini-card .sub { font-size:12px; color:var(--ink-muted); }
+.today-panel { background:var(--surface-2); border-radius:16px; padding:16px; }
+.today-panel .t { font-size:11px; letter-spacing:1px; color:var(--ink-muted); font-weight:600; margin-bottom:8px; }
+.prow { display:flex; align-items:center; gap:8px; background:var(--surface); border:1px solid var(--border);
+  border-radius:10px; padding:9px 12px; margin-bottom:8px; }
+.prow.is-next { border-color:var(--accent); background:var(--accent-soft); }
+.prow .pn { flex:1; font-size:15px; } .prow .pn b { font-weight:600; }
+.prow .pn .ar { font-size:12px; color:var(--ink-muted); margin-left:8px; }
+.prow .est { font-size:11px; color:var(--ink-muted); }
+.prow .pt { font-size:15px; font-weight:500; min-width:52px; text-align:right; }
+.prow .pt.none { color:var(--ink-muted); }
+.explain { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:12px 14px; margin-top:4px; }
+.explain b { font-size:14px; }
+.explain p { font-size:12.5px; color:var(--ink); margin-top:4px; line-height:1.5; }
+.explain .links { margin-top:8px; display:flex; gap:12px; }
+.explain .links span { font-size:12px; color:var(--accent); cursor:pointer; text-decoration:underline dotted; }
+.explain .rules-inline { display:none; margin-top:8px; }
+.explain .rules-inline.open { display:block; }
+.how { margin-top:10px; border-top:1px solid var(--border); padding-top:8px; }
+.how .h { font-size:12px; color:var(--accent); cursor:pointer; text-decoration:underline dotted; }
+.how .body { display:none; font-size:12px; color:var(--ink-muted); margin-top:6px; line-height:1.6; }
+.how.open .body { display:block; }
+
+/* ---- view 4: calendar ---- */
+.cal-head { display:flex; align-items:center; gap:10px; margin-bottom:10px; flex-wrap:wrap; }
+.cal-head .month { font-size:20px; font-weight:600; }
+.cal-head .month-ar { font-size:14px; color:var(--ink-muted); }
+.cal-head .sp { flex:1; }
+.ramadan-banner { display:none; background:var(--surface); border:1px solid var(--border); border-radius:12px;
+  padding:10px 14px; margin-bottom:10px; align-items:center; gap:10px; }
+.ramadan-banner.show { display:flex; }
+.ramadan-banner .txt { flex:1; } .ramadan-banner b { font-size:14px; }
+.ramadan-banner .ar { font-size:13px; color:var(--ink-muted); }
+.weekdays { display:grid; grid-template-columns:repeat(7,1fr); gap:6px; margin-bottom:6px; }
+.weekdays div { font-size:11px; letter-spacing:1px; color:var(--ink-muted); text-align:center; font-weight:600; }
+.grid { display:grid; grid-template-columns:repeat(7,1fr); gap:6px; }
+.day { background:var(--surface); border:1px solid var(--border); border-radius:10px; min-height:58px;
+  padding:6px 8px; cursor:pointer; position:relative; }
+.day.out { opacity:.5; }
+.day.today { border-color:var(--accent); background:var(--accent-soft); box-shadow:0 0 0 1px var(--accent); }
+.day.sel { border-color:var(--accent); }
+.day .g { font-size:15px; font-weight:600; } .day .h { font-size:11px; color:var(--ink-muted); }
+[data-cal-primary="hijri"] .day .g { font-size:11px; font-weight:400; color:var(--ink-muted); }
+[data-cal-primary="hijri"] .day .h { font-size:15px; font-weight:600; color:var(--ink); }
+.day .gold-dot { position:absolute; top:7px; right:7px; }
+.day-strip { margin-top:10px; }
+.day-strip .times { display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; }
+.day-strip .t { background:var(--surface-2); border:1px solid var(--border); border-radius:8px;
+  padding:5px 10px; font-size:12.5px; }
+.day-strip .t b { font-weight:600; }
+.footnote { margin-top:14px; font-size:11.5px; color:var(--ink-muted); line-height:1.5; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="chrome">
+    <span class="tag">SKETCH</span>
+    <div class="seg" id="view-seg">
+      <button data-v="picker" aria-pressed="true">City picker</button>
+      <button data-v="settings" aria-pressed="false">Settings</button>
+      <button data-v="tromso" aria-pressed="false">Tromsø home</button>
+      <button data-v="calendar" aria-pressed="false">Calendar</button>
+    </div>
+    <div class="seg" id="theme-seg">
+      <button data-t="plaster" aria-pressed="true">Plaster</button>
+      <button data-t="ink" aria-pressed="false">Ink</button>
+      <button data-t="ramadan" aria-pressed="false">Ramadan</button>
+    </div>
+    <div class="seg state-seg" id="picker-states">
+      <button data-s="results" aria-pressed="true">Results</button>
+      <button data-s="empty" aria-pressed="false">No results</button>
+      <button data-s="denied" aria-pressed="false">GPS denied</button>
+      <button data-s="unavail" aria-pressed="false">GPS unavailable</button>
+    </div>
+    <div class="seg state-seg" id="tromso-states">
+      <button data-s="june" aria-pressed="true">June · midnight sun</button>
+      <button data-s="dec" aria-pressed="false">December · polar night</button>
+      <button data-s="riyadh" aria-pressed="false">Riyadh · normal</button>
+    </div>
+    <span class="note">Provisional copy (Quill's catalog is the source of truth). Times are <b>engine-shaped examples</b>; calendar Hijri numbers are computed live (Umm al-Qura via Intl). Sample city rows illustrate the cities1000 contract — not the real DB.</span>
+  </div>
+
+  <!-- ============ VIEW 1 · CITY PICKER ============ -->
+  <div class="view active" id="view-picker">
+    <div class="picker-head">
+      <button class="btn" id="picker-back">← Back to settings</button>
+      <span class="eyebrow">CITY PICKER</span>
+      <span class="eyebrow" lang="ar" dir="rtl" style="font-size:12px;letter-spacing:0">اختيار المدينة</span>
+    </div>
+    <div class="card">
+      <div class="search-row">
+        <input type="text" id="city-q" placeholder="Search cities — English or Arabic…" autocomplete="off">
+      </div>
+      <div class="recent" id="recent-row">
+        <span class="caption">Recent:</span>
+        <button class="chip" data-city="Riyadh">Riyadh</button>
+        <button class="chip" data-city="Makkah">Makkah</button>
+        <button class="chip" data-city="Oslo">Oslo</button>
+      </div>
+
+      <div class="results" id="results"></div>
+
+      <div id="no-results">
+        <b>No matches for “<span id="nr-q">xyz</span>”.</b>
+        <ul>
+          <li>Try the Arabic name — search understands both scripts.</li>
+          <li>Enter coordinates manually below.</li>
+          <li>Use my location (opt-in, private).</li>
+        </ul>
+      </div>
+
+      <div class="kbd-hint"><kbd>↑</kbd><kbd>↓</kbd> move · <kbd>Enter</kbd> select · <kbd>Esc</kbd> back — focus stays in the search field</div>
+
+      <div class="opt-row" id="gps-row">
+        <svg width="16" height="16" viewBox="0 0 24 24" style="stroke:var(--accent);fill:none;stroke-width:1.5;stroke-linecap:round"><path d="M12 21s-7-6.1-7-11a7 7 0 0 1 14 0c0 4.9-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>
+        <div class="txt"><b>Use my location</b> <span class="caption">(opt-in)</span>
+          <div>Read once, stays on this device. No network, no account.</div></div>
+        <button class="btn soft" id="gps-btn">Locate</button>
+      </div>
+      <div class="status" id="gps-confirm">
+        <span class="x">✕</span>Location read: <span class="num">24.7136, 46.6753</span> — near Riyadh.
+        Apply this location? <button class="btn soft" style="height:24px">Apply</button> <button class="btn" style="height:24px">Cancel</button>
+      </div>
+      <div class="status" id="gps-denied" style="display:none">Location permission denied — you can enter coordinates manually.</div>
+      <div class="status" id="gps-unavail" style="display:none">Location services are unavailable on this device — enter coordinates manually below.</div>
+
+      <div class="opt-row">
+        <svg width="16" height="16" viewBox="0 0 24 24" style="stroke:var(--ink-muted);fill:none;stroke-width:1.5;stroke-linecap:round"><path d="M4 20l4-1L20 7l-3-3L5 16l-1 4z"/></svg>
+        <div class="txt"><b>Enter coordinates manually</b><div>Decimal degrees + an explicit timezone — we never guess a zone from longitude.</div></div>
+        <button class="btn" id="coords-toggle">Open</button>
+      </div>
+      <div id="coords-form">
+        <div class="row"><label>Latitude</label><input type="text" id="lat" placeholder="e.g. 69.6492"><label>Longitude</label><input type="text" id="lon" placeholder="e.g. 18.9553"></div>
+        <div class="row"><label>Timezone</label><select id="tz"><option>Europe/Oslo</option><option>Asia/Riyadh</option><option>Pacific/Auckland</option><option>Arctic/Longyearbyen</option><option>UTC</option></select></div>
+        <div class="row"><label>Name (opt.)</label><input type="text" id="place-name" placeholder="Name this place" style="width:200px"><button class="btn primary" id="coords-apply">Apply</button></div>
+        <div class="field-err" id="coords-err">Latitude must be between −90 and 90.</div>
+      </div>
+
+      <div class="attr">City data derived from the GeoNames Gazetteer (<a href="https://www.geonames.org/">geonames.org</a>), cities1000 — CC BY 4.0 · filtered and re-formatted for Tawadu · full credit in Credits</div>
+    </div>
+    <div class="status" id="picked-note" style="display:none"><span class="x">✕</span><span id="picked-text"></span></div>
+  </div>
+
+  <!-- ============ VIEW 2 · SETTINGS ============ -->
+  <div class="view" id="view-settings">
+    <div class="cols">
+      <div class="col-left">
+        <div class="card">
+          <div class="card-title">LOCATION</div>
+          <div class="loc-summary">
+            <div class="names">
+              <span class="en">Riyadh</span> <span class="ar" lang="ar" dir="rtl">الرياض</span>
+              <div class="caption">Saudi Arabia · Ar Riyāḑ · <span class="num">24.69, 46.72</span> · Asia/Riyadh</div>
+            </div>
+            <button class="btn soft" id="loc-change">Change…</button>
+          </div>
+          <div class="caption" style="margin-top:8px">City data: GeoNames (CC BY 4.0) · geonames.org</div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">MOSQUES</div>
+          <div id="mosque-list">
+            <div class="mosque active" data-m="m1">
+              <div class="mosque-head">
+                <div class="names"><span class="en">Al-Noor Mosque</span> <span class="ar" lang="ar" dir="rtl">مسجد النور</span>
+                  <div class="sum num">Fajr +15 · Dhuhr +10 · Asr +10 · Maghrib +5 · Isha +10</div></div>
+                <span class="badge active">Active</span>
+                <button class="btn icon edit" title="Edit"><svg viewBox="0 0 24 24"><path d="M4 20l4-1L20 7l-3-3L5 16l-1 4z"/></svg></button>
+                <button class="btn icon rm" title="Remove"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5h6v2m-8 0l1 13h8l1-13"/></svg></button>
+              </div>
+              <div class="confirm">Remove this profile? <button class="btn soft yes">✓</button><button class="btn no">✕</button></div>
+              <div class="mosque-editor">
+                <div class="row"><input type="text" value="Al-Noor Mosque" style="flex:1"><input type="text" lang="ar" dir="rtl" value="مسجد النور" style="flex:1" placeholder="الاسم بالعربية (اختياري)"></div>
+                <div class="ctl-row"><span class="ctl-label">Fajr</span><div class="stepper" data-min="0" data-max="60"><button>−</button><span class="val num">15</span><button>+</button></div><span class="caption">min after prayer</span></div>
+                <div class="ctl-row"><span class="ctl-label">Dhuhr</span><div class="stepper" data-min="0" data-max="60"><button>−</button><span class="val num">10</span><button>+</button></div></div>
+                <div class="ctl-row"><span class="ctl-label">Asr</span><div class="stepper" data-min="0" data-max="60"><button>−</button><span class="val num">10</span><button>+</button></div></div>
+                <div class="ctl-row"><span class="ctl-label">Maghrib</span><div class="stepper" data-min="0" data-max="60"><button>−</button><span class="val num">5</span><button>+</button></div></div>
+                <div class="ctl-row"><span class="ctl-label">Isha</span><div class="stepper" data-min="0" data-max="60"><button>−</button><span class="val num">10</span><button>+</button></div></div>
+                <button class="btn primary done">Done</button> <span class="caption">0 = not set · edits save automatically</span>
+              </div>
+            </div>
+            <div class="mosque" data-m="m2">
+              <div class="mosque-head">
+                <div class="names"><span class="en">Work musallah</span>
+                  <div class="sum">No offsets set</div></div>
+                <button class="btn icon edit" title="Edit"><svg viewBox="0 0 24 24"><path d="M4 20l4-1L20 7l-3-3L5 16l-1 4z"/></svg></button>
+                <button class="btn icon rm" title="Remove"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5h6v2m-8 0l1 13h8l1-13"/></svg></button>
+              </div>
+              <div class="confirm">Remove this profile? <button class="btn soft yes">✓</button><button class="btn no">✕</button></div>
+              <div class="mosque-editor">
+                <div class="row"><input type="text" value="Work musallah" style="flex:1"><input type="text" lang="ar" dir="rtl" style="flex:1" placeholder="الاسم بالعربية (اختياري)"></div>
+                <div class="ctl-row"><span class="ctl-label">Fajr</span><div class="stepper" data-min="0" data-max="60"><button>−</button><span class="val num">0</span><button>+</button></div></div>
+                <div class="ctl-row"><span class="ctl-label">Dhuhr</span><div class="stepper" data-min="0" data-max="60"><button>−</button><span class="val num">0</span><button>+</button></div></div>
+                <div class="ctl-row"><span class="ctl-label">Asr</span><div class="stepper" data-min="0" data-max="60"><button>−</button><span class="val num">0</span><button>+</button></div></div>
+                <div class="ctl-row"><span class="ctl-label">Maghrib</span><div class="stepper" data-min="0" data-max="60"><button>−</button><span class="val num">0</span><button>+</button></div></div>
+                <div class="ctl-row"><span class="ctl-label">Isha</span><div class="stepper" data-min="0" data-max="60"><button>−</button><span class="val num">0</span><button>+</button></div></div>
+                <button class="btn primary done">Done</button> <span class="caption">0 = not set</span>
+              </div>
+            </div>
+          </div>
+          <button class="btn" id="add-mosque">＋ Add mosque</button>
+          <div class="caption" style="margin-top:8px">The home NEXT IQAMAH card follows the active profile.</div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">ALERTS</div>
+          <div class="ctl-row"><span class="ctl-label">Pre-alert</span><div class="stepper" data-min="0" data-max="60"><button>−</button><span class="val num">10</span><button>+</button></div><span class="caption">minutes before</span></div>
+          <div class="caption">Iqamah offsets moved to MOSQUES — they belong to a mosque.</div>
+        </div>
+      </div>
+
+      <div class="col-right">
+        <div class="card">
+          <div class="card-title">CALCULATION</div>
+          <div class="caption" style="margin-bottom:6px">Method: Umm al-Qura · Madhab: Shafi · Rounding: nearest minute <span style="opacity:.7">(lists unchanged — omitted here)</span></div>
+          <div class="card-title" style="margin-top:8px">HIGH-LATITUDE RULE</div>
+          <div id="rules">
+            <div class="rule selected" data-rule="Angle-based"><div class="rname">Angle-based</div><div class="rdesc">Estimates Fajr and Isha from the sun's angle — a common choice for high latitudes.</div></div>
+            <div class="rule" data-rule="Middle of the night"><div class="rname">Middle of the night</div><div class="rdesc">Places Fajr and Isha at the midpoint between sunset and sunrise.</div></div>
+            <div class="rule" data-rule="Seventh of the night"><div class="rname">Seventh of the night</div><div class="rdesc">Places Fajr and Isha one seventh of the night after sunset / before sunrise.</div></div>
+          </div>
+          <div class="caption">These rules only matter when the sun doesn't reach the usual angles — near the polar circles. They bound Fajr/Isha; they cannot create a sunrise that doesn't exist.</div>
+          <div style="margin-top:10px">
+            <span class="h" id="fine-toggle" style="font-size:12px;color:var(--accent);cursor:pointer;text-decoration:underline dotted">Fine-tune times</span>
+            <span class="fine-summary" id="fine-summary">· no adjustments</span>
+            <div class="expand" id="fine-body" style="margin-top:6px">
+              <div class="ctl-row"><span class="ctl-label">Fajr</span><div class="stepper fine" data-min="-30" data-max="30" data-prayer="Fajr"><button>−</button><span class="val num">0</span><button>+</button></div><span class="caption">min</span></div>
+              <div class="ctl-row"><span class="ctl-label">Dhuhr</span><div class="stepper fine" data-min="-30" data-max="30" data-prayer="Dhuhr"><button>−</button><span class="val num">0</span><button>+</button></div></div>
+              <div class="ctl-row"><span class="ctl-label">Asr</span><div class="stepper fine" data-min="-30" data-max="30" data-prayer="Asr"><button>−</button><span class="val num">0</span><button>+</button></div></div>
+              <div class="ctl-row"><span class="ctl-label">Maghrib</span><div class="stepper fine" data-min="-30" data-max="30" data-prayer="Maghrib"><button>−</button><span class="val num">0</span><button>+</button></div></div>
+              <div class="ctl-row"><span class="ctl-label">Isha</span><div class="stepper fine" data-min="-30" data-max="30" data-prayer="Isha"><button>−</button><span class="val num">0</span><button>+</button></div></div>
+              <div class="caption">Different sources can differ by about 2 minutes — adjust any prayer instead of trusting one source blindly.</div>
+            </div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">APPEARANCE</div>
+          <div class="seg-inline"><span class="lbl">Theme</span><button class="pill on">Plaster</button><button class="pill">Ink</button><button class="pill">Ramadan</button></div>
+          <div class="caption">Unchanged. A passive “Ramadan mode is on — manage” row appears here only while the mode is active.</div>
+        </div>
+        <div class="caption">NOTIFICATIONS and the full-width AUDIO band (Phase 3) follow below, unchanged — omitted in this sketch. Save row (حفظ / إغلاق) stays last.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ VIEW 3 · TROMSØ HOME ============ -->
+  <div class="view" id="view-tromso">
+    <div class="home-head">
+      <span class="mark">Tawadu · <span lang="ar" dir="rtl">تواضع</span></span>
+      <span class="sub" id="home-city">Tromsø</span>
+      <span class="sub" id="home-city-ar" lang="ar" dir="rtl" style="display:none"></span>
+      <span class="sub num" id="home-hijri">· 6 ذو الحجة 1448 هـ</span>
+      <span style="flex:1"></span>
+      <button class="btn" lang="ar" dir="rtl">الإعدادات</button>
+    </div>
+    <div class="home-cols">
+      <div class="home-left">
+        <div class="next-card">
+          <div class="eyebrow">NEXT PRAYER</div>
+          <div class="pname" id="next-name">Dhuhr</div>
+          <div class="par" lang="ar" dir="rtl" id="next-ar">الظهر</div>
+          <div class="count num" id="next-count">00:38:12</div>
+        </div>
+        <div class="mini-card">
+          <div class="eyebrow">NEXT IQAMAH</div>
+          <div class="body num" id="iq-body">Dhuhr · 12:57</div>
+          <div class="sub">Al-Noor Mosque · <span lang="ar" dir="rtl">مسجد النور</span> · Dhuhr +10 min</div>
+        </div>
+        <div class="mini-card">
+          <div class="eyebrow">MORNING ATHKAR</div>
+          <div class="body" lang="ar" dir="rtl" style="font-family:Amiri;font-size:18px;text-align:right">سُبْحَانَ اللَّهِ وَبِحَمْدِهِ · مِائَةَ مَرَّةٍ</div>
+        </div>
+      </div>
+      <div class="home-right">
+        <div class="today-panel">
+          <div class="t">TODAY</div>
+          <div id="today-rows"></div>
+          <div class="explain" id="explain">
+            <b id="ex-title">Midnight sun in Tromsø</b>
+            <p id="ex-body"></p>
+            <div class="links"><span id="ex-change">Change rule</span><span id="ex-why">Why these rules?</span></div>
+            <div class="rules-inline" id="ex-rules"></div>
+          </div>
+          <div class="how" id="how">
+            <span class="h">How these times are computed</span>
+            <div class="body" id="how-body"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ VIEW 4 · CALENDAR ============ -->
+  <div class="view" id="view-calendar">
+    <div class="cal-head">
+      <button class="btn icon" id="cal-prev">‹</button>
+      <span class="month" id="cal-month">November 2026</span>
+      <span class="month-ar" id="cal-month-ar" lang="ar" dir="rtl"></span>
+      <button class="btn icon" id="cal-next">›</button>
+      <button class="btn" id="cal-today">Today</button>
+      <span class="sp"></span>
+      <div class="seg" id="cal-primary">
+        <button data-p="greg" aria-pressed="true">Gregorian primary</button>
+        <button data-p="hijri" aria-pressed="false">Hijri primary</button>
+      </div>
+      <button class="btn" id="cal-ramadan-jump">Jump to Ramadan 1448</button>
+    </div>
+
+    <div class="ramadan-banner" id="ramadan-banner">
+      <span class="gold-dot"></span>
+      <div class="txt"><b>Ramadan Mubarak</b> <span class="ar" lang="ar" dir="rtl">رمضان مبارك</span>
+        <div class="caption">Mode = Ramadan theme suggestion + suhur/iftar pre-alerts + calendar emphasis. Nothing else.</div></div>
+      <button class="btn soft" id="ramadan-toggle">Turn on Ramadan mode</button>
+    </div>
+    <div class="status" id="ramadan-suggest" style="display:none">Switch to the Ramadan theme? <button class="btn soft" id="rs-yes" style="height:24px">Switch</button> <button class="btn" id="rs-no" style="height:24px">Keep current</button></div>
+    <div class="status" id="ramadan-restore" style="display:none">Ramadan mode is off. Restore your previous theme? <button class="btn soft" id="rr-yes" style="height:24px">Restore</button> <button class="btn" id="rr-no" style="height:24px">Stay</button></div>
+
+    <div class="card">
+      <div class="weekdays"><div>MON</div><div>TUE</div><div>WED</div><div>THU</div><div>FRI</div><div>SAT</div><div>SUN</div></div>
+      <div class="grid" id="cal-grid"></div>
+      <div class="day-strip" id="day-strip" style="display:none">
+        <b id="ds-date" style="font-size:13.5px"></b> <span class="caption" id="ds-hijri"></span>
+        <div class="times" id="ds-times"></div>
+        <div class="caption" style="margin-top:6px">Example day times — the app shows engine values, with — where a time is None and an “estimated” caption where a rule applied.</div>
+      </div>
+      <div class="caption" style="margin-top:10px">Hijri dates: Umm al-Qura, table-driven. In the app, navigation beyond the table's range is disabled with the engine's bound stated — never extrapolated. Gold dots mark Ramadan days (non-text markers — pass contrast in all themes).</div>
+    </div>
+  </div>
+
+  <div class="footnote">Sketch for docs/phase5-ui-proposal.md · tokens from design/brand.md · Arabic runs are separate RTL spans · gold is non-text-only in Plaster (3.14:1 as text fails 4.5:1) · columns keep natural heights.</div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
+const root = document.documentElement;
+
+/* ---------- view + theme switching ---------- */
+function setView(v){ root.dataset.view = v;
+  $$('.view').forEach(x => x.classList.toggle('active', x.id === 'view-' + v));
+  $$('#view-seg button').forEach(b => b.setAttribute('aria-pressed', b.dataset.v === v));
+  if (v === 'picker') setTimeout(() => $('#city-q').focus(), 50);
+}
+$('#view-seg').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setView(b.dataset.v); });
+function setTheme(t){ root.dataset.theme = t;
+  $$('#theme-seg button').forEach(b => b.setAttribute('aria-pressed', b.dataset.t === t)); }
+$('#theme-seg').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setTheme(b.dataset.t); });
+$('#picker-back').addEventListener('click', () => setView('settings'));
+$('#loc-change').addEventListener('click', () => setView('picker'));
+
+/* ---------- city picker ---------- */
+const CITIES = [ // sample rows illustrating the contract — curated AR only where shipped
+  {n:'Riyadh', ar:'الرياض', c:'Saudi Arabia', a:'Ar Riyāḑ', tz:'Asia/Riyadh', al:['الرياض','رياض']},
+  {n:'Makkah', ar:'مكة المكرمة', c:'Saudi Arabia', a:'Makkah', tz:'Asia/Riyadh', al:['مكة','مكه']},
+  {n:'Madinah', ar:'المدينة المنورة', c:'Saudi Arabia', a:'Al Madīnah', tz:'Asia/Riyadh', al:['المدينة']},
+  {n:'Jeddah', ar:'جدة', c:'Saudi Arabia', a:'Makkah', tz:'Asia/Riyadh', al:['جده']},
+  {n:'Tromsø', ar:'', c:'Norway', a:'Troms', tz:'Europe/Oslo', al:['tromso']},
+  {n:'Oslo', ar:'', c:'Norway', a:'Oslo', tz:'Europe/Oslo', al:[]},
+  {n:'Longyearbyen', ar:'', c:'Svalbard & Jan Mayen', a:'Svalbard', tz:'Arctic/Longyearbyen', al:[]},
+  {n:'Auckland', ar:'', c:'New Zealand', a:'Auckland', tz:'Pacific/Auckland', al:['tāmaki']},
+  {n:'Springfield', ar:'', c:'United States', a:'Illinois', tz:'America/Chicago', al:[]},
+  {n:'Springfield', ar:'', c:'United States', a:'Massachusetts', tz:'America/New_York', al:[]},
+  {n:'Springfield', ar:'', c:'United States', a:'Missouri', tz:'America/Chicago', al:[]},
+  {n:'Cairo', ar:'القاهرة', c:'Egypt', a:'Cairo', tz:'Africa/Cairo', al:['القاهره']},
+  {n:'London', ar:'', c:'United Kingdom', a:'England', tz:'Europe/London', al:[]},
+];
+const norm = s => s.toLowerCase().normalize('NFD')
+  .replace(/[\u064B-\u065F\u0670]/g,'').replace(/[أإآ]/g,'ا').replace(/ى/g,'ي').replace(/ة/g,'ه')
+  .replace(/[\u0300-\u036f]/g,'');
+let hl = 0, shown = [];
+function renderResults(q){
+  const nq = norm(q.trim());
+  shown = !nq ? CITIES.slice(0,8) : CITIES.filter(c =>
+    norm(c.n).includes(nq) || (c.ar && norm(c.ar).includes(nq)) || c.al.some(a => norm(a).includes(nq)));
+  hl = Math.min(hl, Math.max(0, shown.length-1));
+  const box = $('#results');
+  box.innerHTML = shown.map((c,i) => `
+    <div class="city-row ${i===hl?'hl':''}" data-i="${i}">
+      <div class="city-main">
+        <span class="city-name">${c.n}</span>
+        ${c.ar ? `<span class="city-ar" lang="ar" dir="rtl">${c.ar}</span>` : ''}
+        <div class="city-sub">${c.a} · ${c.tz}</div>
+      </div>
+      <div class="city-country">${c.c}</div>
+    </div>`).join('');
+  const empty = shown.length === 0;
+  box.style.display = empty ? 'none' : 'block';
+  $('#no-results').style.display = empty ? 'block' : 'none';
+  $('#nr-q').textContent = q.trim() || '…';
+}
+function pick(i){
+  const c = shown[i]; if (!c) return;
+  $('#picked-text').textContent = `Selected ${c.n}${c.ar ? ' · ' + c.ar : ''} (${c.c}, ${c.a}) — home and all times recompute. Esc would have changed nothing.`;
+  $('#picked-note').style.display = 'block';
+}
+$('#city-q').addEventListener('input', e => renderResults(e.target.value));
+$('#city-q').addEventListener('keydown', e => {
+  if (e.key === 'ArrowDown'){ hl = (hl+1) % Math.max(1,shown.length); renderResults($('#city-q').value); e.preventDefault(); }
+  else if (e.key === 'ArrowUp'){ hl = (hl-1+shown.length) % Math.max(1,shown.length); renderResults($('#city-q').value); e.preventDefault(); }
+  else if (e.key === 'Enter'){ pick(hl); e.preventDefault(); }
+  else if (e.key === 'Escape'){ setView('settings'); }
+});
+$('#results').addEventListener('click', e => { const r = e.target.closest('.city-row'); if (r) pick(+r.dataset.i); });
+$('#recent-row').addEventListener('click', e => { const c = e.target.closest('.chip'); if (!c) return;
+  $('#city-q').value = c.dataset.city; renderResults(c.dataset.city); $('#city-q').focus(); });
+renderResults('');
+/* picker states */
+$('#picker-states').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  $$('#picker-states button').forEach(x => x.setAttribute('aria-pressed', x === b));
+  const s = b.dataset.s;
+  $('#gps-denied').style.display = s==='denied' ? 'block' : 'none';
+  $('#gps-unavail').style.display = s==='unavail' ? 'block' : 'none';
+  $('#gps-confirm').style.display = 'none';
+  $('#gps-row').classList.toggle('disabled', s==='unavail');
+  $('#gps-btn').disabled = s==='unavail';
+  if (s==='empty'){ $('#city-q').value = 'xyzzy'; renderResults('xyzzy'); }
+  else { $('#city-q').value = ''; renderResults(''); }
+});
+$('#gps-btn').addEventListener('click', () => { $('#gps-confirm').style.display='block'; });
+$('#gps-confirm .x').addEventListener('click', () => $('#gps-confirm').style.display='none');
+$('#coords-toggle').addEventListener('click', () => {
+  const f = $('#coords-form'); f.style.display = f.style.display==='block' ? 'none' : 'block'; });
+$('#coords-apply').addEventListener('click', () => {
+  const lat = parseFloat($('#lat').value), lon = parseFloat($('#lon').value);
+  const err = $('#coords-err');
+  if (isNaN(lat) || lat < -90 || lat > 90){ err.textContent='Latitude must be a number between −90 and 90.'; err.style.display='block'; return; }
+  if (isNaN(lon) || lon < -180 || lon > 180){ err.textContent='Longitude must be a number between −180 and 180.'; err.style.display='block'; return; }
+  err.style.display='none';
+  const name = $('#place-name').value.trim();
+  $('#picked-text').textContent = `Applied ${name || 'unnamed place'} at ${lat}, ${lon} · ${$('#tz').value} — the header shows ${name ? 'the name' : 'the coordinates'} honestly.`;
+  $('#picked-note').style.display='block';
+});
+$('#picked-note .x').addEventListener('click', () => $('#picked-note').style.display='none');
+
+/* ---------- mosques ---------- */
+function bindMosque(m){
+  m.querySelector('.mosque-head').addEventListener('click', e => {
+    if (e.target.closest('button')) return;
+    $$('.mosque').forEach(x => { x.classList.toggle('active', x===m);
+      const b = x.querySelector('.badge.active'); if (x===m && !b){
+        x.querySelector('.names').insertAdjacentHTML('afterend','<span class="badge active">Active</span>'); }
+      else if (x!==m && b) b.remove(); });
+  });
+  m.querySelector('.edit').addEventListener('click', () => {
+    $$('.mosque').forEach(x => x.classList.toggle('editing', x===m && !m.classList.contains('editing'))); });
+  m.querySelector('.done')?.addEventListener('click', () => m.classList.remove('editing'));
+  m.querySelector('.rm').addEventListener('click', () => m.classList.add('confirming'));
+  m.querySelector('.confirm .no').addEventListener('click', () => m.classList.remove('confirming'));
+  m.querySelector('.confirm .yes').addEventListener('click', () => {
+    const wasActive = m.classList.contains('active'); m.remove();
+    if (wasActive){ $('#iq-body').textContent = 'Set your mosque’s iqamah offsets';
+      $('#iq-body').nextElementSibling.innerHTML = 'No active profile — the home card shows its honest empty state.'; }
+  });
+  m.querySelectorAll('.stepper').forEach(bindStepper);
+}
+function bindStepper(st){
+  const val = st.querySelector('.val'), min = +st.dataset.min, max = +st.dataset.max;
+  const [minus, plus] = st.querySelectorAll('button');
+  const upd = d => { let v = parseInt(val.textContent)||0; v = Math.max(min, Math.min(max, v+d));
+    val.textContent = v; if (st.classList.contains('fine')) fineSummary(); };
+  minus.addEventListener('click', () => upd(-1)); plus.addEventListener('click', () => upd(1));
+}
+$$('.mosque').forEach(bindMosque);
+$$('.stepper:not(.fine)').forEach(st => { if (!st.closest('.mosque')) bindStepper(st); });
+$('#add-mosque').addEventListener('click', () => {
+  const m = document.createElement('div'); m.className = 'mosque editing';
+  m.innerHTML = `<div class="mosque-head"><div class="names"><span class="en">New mosque</span><div class="sum">No offsets set</div></div>
+    <button class="btn icon edit" title="Edit"><svg viewBox="0 0 24 24"><path d="M4 20l4-1L20 7l-3-3L5 16l-1 4z"/></svg></button>
+    <button class="btn icon rm" title="Remove"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5h6v2m-8 0l1 13h8l1-13"/></svg></button></div>
+    <div class="confirm">Remove this profile? <button class="btn soft yes">✓</button><button class="btn no">✕</button></div>
+    <div class="mosque-editor"><div class="row"><input type="text" placeholder="Mosque name (required)" style="flex:1">
+    <input type="text" lang="ar" dir="rtl" style="flex:1" placeholder="الاسم بالعربية (اختياري)"></div>
+    ${['Fajr','Dhuhr','Asr','Maghrib','Isha'].map(p=>`<div class="ctl-row"><span class="ctl-label">${p}</span><div class="stepper" data-min="0" data-max="60"><button>−</button><span class="val num">0</span><button>+</button></div></div>`).join('')}
+    <button class="btn primary done">Done</button> <span class="caption">A name is required — never a silent “Mosque 2”.</span></div>`;
+  $('#mosque-list').appendChild(m); bindMosque(m);
+});
+
+/* ---------- rules + fine-tune ---------- */
+let rule = 'Angle-based';
+const RULES = $$('#rules .rule').map(r => ({name:r.dataset.rule, desc:r.querySelector('.rdesc').textContent}));
+$('#rules').addEventListener('click', e => {
+  const r = e.target.closest('.rule'); if (!r) return;
+  $$('#rules .rule').forEach(x => x.classList.toggle('selected', x===r));
+  rule = r.dataset.rule; renderTromso();
+});
+$('#fine-toggle').addEventListener('click', () => $('#fine-body').classList.toggle('open'));
+$$('.stepper.fine').forEach(bindStepper);
+function fineSummary(){
+  const parts = $$('.stepper.fine').map(st => { const v = parseInt(st.querySelector('.val').textContent)||0;
+    return v ? `${st.dataset.prayer} ${v>0?'+':''}${v}` : ''; }).filter(Boolean);
+  $('#fine-summary').textContent = parts.length ? '· ' + parts.join(' · ') + ' min' : '· no adjustments';
+}
+
+/* ---------- Tromsø home ---------- */
+let tstate = 'june';
+const T = {
+  june: { city:'Tromsø', ar:'', hijri:'· 6 ذو الحجة 1448 هـ', next:['Dhuhr','الظهر','00:38:12'], iq:'Dhuhr · 12:57',
+    rows:[['Fajr','الفجر','00:52',true,false],['Sunrise','الشروق','—',false,true],['Dhuhr','الظهر','12:47',false,false],
+          ['Asr','العصر','16:42',false,false],['Maghrib','المغرب','—',false,true],['Isha','العشاء','23:05',true,false]],
+    title:'Midnight sun in Tromsø',
+    body:() => `Tromsø is inside the Arctic Circle. At this time of year the sun never sets, so there is no sunrise or sunset to compute — and Maghrib has no defined time. Fajr and Isha are estimated using ${rule}.` },
+  dec: { city:'Tromsø', ar:'', hijri:'· 7 رجب 1448 هـ', next:['Dhuhr','الظهر','00:21:40'], iq:'Dhuhr · 12:08',
+    rows:[['Fajr','الفجر','—',false,true],['Sunrise','الشروق','—',false,true],['Dhuhr','الظهر','11:58',false,false],
+          ['Asr','العصر','13:12',false,false],['Maghrib','المغرب','—',false,true],['Isha','العشاء','—',false,true]],
+    title:'Polar night in Tromsø',
+    body:() => `Tromsø is inside the Arctic Circle. At this time of year the sun never rises, so there is no sunrise, sunset or Maghrib to compute. The selected rule (${rule}) cannot estimate Fajr and Isha without twilight, so they show — rather than an invented time.` },
+  riyadh: { city:'Riyadh', ar:'الرياض', hijri:'· 9 جمادى الآخرة 1448 هـ', next:['Fajr','الفجر','03:21:35'], iq:'Fajr · 05:06',
+    rows:[['Fajr','الفجر','04:51',false,false],['Sunrise','الشروق','06:12',false,false],['Dhuhr','الظهر','11:39',false,false],
+          ['Asr','العصر','14:44',false,false],['Maghrib','المغرب','17:05',false,false],['Isha','العشاء','18:35',false,false]],
+    title:'', body:() => '' },
+};
+function renderTromso(){
+  const d = T[tstate];
+  $('#home-city').textContent = d.city;
+  const arEl = $('#home-city-ar'); arEl.style.display = d.ar ? '' : 'none'; arEl.textContent = d.ar;
+  $('#home-hijri').textContent = d.hijri;
+  $('#next-name').textContent = d.next[0]; $('#next-ar').textContent = d.next[1]; $('#next-count').textContent = d.next[2];
+  $('#iq-body').textContent = d.iq;
+  $('#today-rows').innerHTML = d.rows.map(r => `
+    <div class="prow ${r[0]===d.next[0]?'is-next':''}">
+      ${r[4] ? '<span class="info-dot"></span>' : '<span style="width:6px;flex:0 0 6px"></span>'}
+      <span class="pn"><b>${r[0]}</b><span class="ar" lang="ar" dir="rtl">${r[1]}</span></span>
+      ${r[3] ? '<span class="est">estimated</span>' : ''}
+      <span class="pt num ${r[4]?'none':''}">${r[2]}</span>
+    </div>`).join('');
+  const ex = $('#explain');
+  if (d.title){ ex.style.display='block'; $('#ex-title').textContent = d.title; $('#ex-body').textContent = d.body(); }
+  else ex.style.display='none';
+  $('#ex-rules').innerHTML = RULES.map(r => `<div class="rule ${r.name===rule?'selected':''}" style="cursor:default"><div class="rname">${r.name}</div><div class="rdesc">${r.desc}</div></div>`).join('');
+  $('#how-body').innerHTML = `Method: Umm al-Qura · Madhab: Shafi · High-latitude rule: ${rule} · Rounding: nearest minute · Adjustments: ${$('#fine-summary').textContent.replace('· ','')}.<br>Different sources can differ by about 2 minutes. Fine-tune any prayer in Settings → Calculation.`;
+}
+$('#tromso-states').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  $$('#tromso-states button').forEach(x => x.setAttribute('aria-pressed', x===b));
+  tstate = b.dataset.s; renderTromso();
+});
+$('#ex-change').addEventListener('click', () => setView('settings'));
+$('#ex-why').addEventListener('click', () => $('#ex-rules').classList.toggle('open'));
+$('#how .h').addEventListener('click', () => $('#how').classList.toggle('open'));
+renderTromso();
+
+/* ---------- calendar (real Gregorian + Umm al-Qura Hijri via Intl) ---------- */
+const hijriDay = new Intl.DateTimeFormat('en-u-ca-islamic-umalqura', {day:'numeric'});
+const hijriMon = new Intl.DateTimeFormat('en-u-ca-islamic-umalqura', {month:'long'});
+const hijriMonAr = new Intl.DateTimeFormat('ar-u-ca-islamic-umalqura', {month:'long'});
+const hijriYear = new Intl.DateTimeFormat('en-u-ca-islamic-umalqura', {year:'numeric'});
+const gregMon = new Intl.DateTimeFormat('en', {month:'long', year:'numeric'});
+let cursor = new Date(); cursor.setDate(1);
+let ramadanMode = false, prevTheme = 'plaster', selectedIso = null;
+const iso = d => d.toISOString().slice(0,10);
+function renderCal(){
+  const y = cursor.getFullYear(), m = cursor.getMonth();
+  $('#cal-month').textContent = gregMon.format(cursor);
+  const first = new Date(y, m, 1);
+  const lead = (first.getDay() + 6) % 7; // Monday start
+  const start = new Date(y, m, 1 - lead);
+  const todayIso = iso(new Date());
+  let html = '', hasRamadan = false;
+  const monthsSeen = new Set();
+  for (let i = 0; i < 42; i++){
+    const d = new Date(start); d.setDate(start.getDate() + i);
+    const hm = hijriMon.format(d); monthsSeen.add(hm);
+    const isRam = hm === 'Ramadan'; if (isRam && d.getMonth() === m) hasRamadan = true;
+    const inMonth = d.getMonth() === m;
+    html += `<div class="day ${inMonth?'':'out'} ${iso(d)===todayIso?'today':''} ${iso(d)===selectedIso?'sel':''}" data-iso="${iso(d)}" data-ram="${isRam?1:0}">
+      ${isRam?'<span class="gold-dot"></span>':''}
+      <div class="g num">${d.getDate()}</div><div class="h num">${hijriDay.format(d)}</div></div>`;
+  }
+  $('#cal-grid').innerHTML = html;
+  const mid = new Date(y, m, 15);
+  $('#cal-month-ar').textContent = hijriMonAr.format(mid) + ' ' + hijriYear.format(mid).replace(/\D/g,'') + ' هـ';
+  // banner: current month is Ramadan, or (demo) the displayed month contains Ramadan days
+  const todayRam = hijriMon.format(new Date()) === 'Ramadan';
+  $('#ramadan-banner').classList.toggle('show', todayRam || hasRamadan);
+  $('#ramadan-toggle').textContent = ramadanMode ? 'Turn off Ramadan mode' : 'Turn on Ramadan mode';
+}
+$('#cal-prev').addEventListener('click', () => { cursor.setMonth(cursor.getMonth()-1); renderCal(); });
+$('#cal-next').addEventListener('click', () => { cursor.setMonth(cursor.getMonth()+1); renderCal(); });
+$('#cal-today').addEventListener('click', () => { cursor = new Date(); cursor.setDate(1); renderCal(); });
+$('#cal-ramadan-jump').addEventListener('click', () => { cursor = new Date(2027, 1, 1); renderCal(); }); // Feb 2027 ≈ Ramadan 1448
+$('#cal-primary').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return;
+  root.dataset.calPrimary = b.dataset.p;
+  $$('#cal-primary button').forEach(x => x.setAttribute('aria-pressed', x===b)); });
+$('#cal-grid').addEventListener('click', e => {
+  const cell = e.target.closest('.day'); if (!cell) return;
+  selectedIso = cell.dataset.iso; renderCal();
+  const d = new Date(selectedIso + 'T12:00:00');
+  $('#day-strip').style.display = 'block';
+  $('#ds-date').textContent = d.toDateString();
+  $('#ds-hijri').textContent = hijriDay.format(d) + ' ' + hijriMon.format(d) + ' ' + hijriYear.format(d).replace(/\D/g,'') + ' AH';
+  $('#ds-times').innerHTML = [['Fajr','04:51'],['Dhuhr','11:39'],['Asr','14:44'],['Maghrib','17:05'],['Isha','18:35']]
+    .map(t => `<span class="t"><b>${t[0]}</b> <span class="num">${t[1]}</span></span>`).join('');
+});
+$('#ramadan-toggle').addEventListener('click', () => {
+  ramadanMode = !ramadanMode;
+  if (ramadanMode){ prevTheme = root.dataset.theme; $('#ramadan-suggest').style.display='block'; $('#ramadan-restore').style.display='none'; }
+  else { $('#ramadan-suggest').style.display='none';
+    if (root.dataset.theme === 'ramadan') $('#ramadan-restore').style.display='block'; }
+  renderCal();
+});
+$('#rs-yes').addEventListener('click', () => { setTheme('ramadan'); $('#ramadan-suggest').style.display='none'; });
+$('#rs-no').addEventListener('click', () => $('#ramadan-suggest').style.display='none');
+$('#rr-yes').addEventListener('click', () => { setTheme(prevTheme); $('#ramadan-restore').style.display='none'; });
+$('#rr-no').addEventListener('click', () => $('#ramadan-restore').style.display='none');
+renderCal();
+
+/* ---------- deep links: #view=tromso&theme=ink&tstate=dec&pstate=empty&cal=ramadan&mode=on ---------- */
+(function(){
+  const p = new URLSearchParams(location.hash.slice(1));
+  if (p.get('cal') === 'ramadan') document.querySelector('#cal-ramadan-jump').click();
+  if (p.get('mode') === 'on'){ document.querySelector('#ramadan-toggle').click();
+    const y = document.querySelector('#rs-yes'); if (y) y.click(); }
+  if (p.get('tstate')){ const b = [...document.querySelectorAll('#tromso-states button')]
+    .find(x => x.dataset.s === p.get('tstate')); if (b) b.click(); }
+  if (p.get('pstate')){ const b = [...document.querySelectorAll('#picker-states button')]
+    .find(x => x.dataset.s === p.get('pstate')); if (b) b.click(); }
+  if (p.get('editor')) document.querySelector('.mosque .edit')?.click();
+  if (p.get('theme')) setTheme(p.get('theme'));
+  if (p.get('view')) setView(p.get('view'));
+})();
+</script>
+</body>
+</html>

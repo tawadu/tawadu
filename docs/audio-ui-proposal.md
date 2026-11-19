@@ -121,8 +121,11 @@ Four rows, one per event kind: **Athan · Iqamah · Athkar · Chime**. Each row:
   in settings.
 
 **Gold's intentional job** (brand: *sacred/athkar accents only*): the **Athkar
-row** gets a small gold dot before its label and its Arabic run renders in
-`Palette.gold`. Nothing else in the audio section uses gold — licence badges stay
+row** gets a small gold dot before its label; its Arabic run renders in
+`Palette.gold` **in Ink and Ramadan only**. In Plaster, gold-as-text measures
+3.14:1 (fails the 4.5:1 bar — see phase5-ui-proposal.md §0), so the label stays
+`ink` and the gold dot (non-text marker, ≥3:1) carries the accent. Nothing else
+in the audio section uses gold — licence badges stay
 neutral, actions stay accent. This also finally gives gold a home on the Configure
 surface (Phase 6 debt: "gold unused"). **Theme note:** the Ramadan palette defines
 no `--gold`; there, `--accent` *is* gold (`#D9A441`), so the athkar marker maps to

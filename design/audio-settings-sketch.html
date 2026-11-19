@@ -121,6 +121,9 @@ body {
 /* keep the control column aligned: non-athkar rows reserve the same 6px slot */
 .event:not(.athkar) .event-head::before { content:""; width:6px; flex:0 0 6px; }
 .event.athkar .ev-label .ar { color:var(--gold); }
+/* contrast rule (phase5-ui-proposal §0): gold TEXT fails 4.5:1 in Plaster (3.14:1) —
+   there the label stays ink and the gold dot (non-text, ≥3:1) carries the accent */
+[data-theme="plaster"] .event.athkar .ev-label .ar { color:var(--ink); }
 .voice-pill { flex:1; display:flex; align-items:center; justify-content:space-between; gap:8px;
   height:30px; padding:0 10px; border-radius:10px; border:1px solid var(--border);
   background:var(--surface-2); font-size:12.5px; cursor:pointer; color:var(--ink);
