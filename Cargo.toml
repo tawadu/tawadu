@@ -26,6 +26,7 @@ rodio = "0.23"
 symphonia = { version = "0.5", features = ["all"] }
 hound = "3"
 rubato = "0.15"
+sha2 = "0.10"
 # --- async ---
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "fs"] }
 # --- ui ---

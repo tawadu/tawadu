@@ -8,6 +8,70 @@ use crate::scheduler::IqamahOffsets;
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 
+/// Playback sequence mode. Pure data: lives in core so the settings blob
+/// stays one serialisable shape; the audio engine consumes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaybackMode {
+    Sequential,
+    Shuffle,
+}
+
+impl Default for PlaybackMode {
+    fn default() -> Self {
+        PlaybackMode::Sequential
+    }
+}
+
+/// The user's per-event voice choice. `pack: None` means "Default" (the
+/// marked default pack, else the first installed pack — never a guess).
+/// `mode_override: None` means the pack manifest's sequence mode applies;
+/// an override always wins over the manifest (Phase 3 decision 7).
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct EventVoice {
+    #[serde(default)]
+    pub pack: Option<String>,
+    #[serde(default)]
+    pub mode_override: Option<PlaybackMode>,
+}
+
+/// Audio settings, persisted inside the settings blob. `serde(default)` on
+/// the whole struct keeps pre-audio blobs loading unchanged.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AudioSettings {
+    /// The pack the user marked default. `None` = first installed pack.
+    #[serde(default)]
+    pub default_pack: Option<String>,
+    /// Per-event choices, keyed `athan` / `iqamah` / `athkar` / `chime`.
+    /// A missing key is "Default" — never a fabricated choice.
+    #[serde(default)]
+    pub event_voices: std::collections::BTreeMap<String, EventVoice>,
+    /// Stop the athan after N seconds; 0 = play the full recording.
+    /// The user's original ask. Applied as a fade-out, never a hard click.
+    #[serde(default)]
+    pub athan_stop_after_s: u32,
+    /// Seed for deterministic shuffle: same seed + same clips = same order.
+    #[serde(default = "default_shuffle_seed")]
+    pub shuffle_seed: u64,
+}
+
+fn default_shuffle_seed() -> u64 {
+    // A fixed default keeps playback reproducible across restarts; the user
+    // never sees this number, but tests and bug reports can rely on it.
+    0x7461_7761_6475_0001
+}
+
+impl Default for AudioSettings {
+    fn default() -> Self {
+        Self {
+            default_pack: None,
+            event_voices: std::collections::BTreeMap::new(),
+            athan_stop_after_s: 0,
+            shuffle_seed: default_shuffle_seed(),
+        }
+    }
+}
+
 /// Interface theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -87,6 +151,10 @@ pub struct Settings {
     /// still loads instead of falling back to defaults.
     #[serde(default)]
     pub notifications: NotificationSettings,
+    /// `serde(default)` so a settings blob written before audio existed
+    /// still loads: no packs chosen, no trim, fixed shuffle seed.
+    #[serde(default)]
+    pub audio: AudioSettings,
 }
 
 impl Default for Settings {
@@ -109,6 +177,7 @@ impl Default for Settings {
             start_at_login: false,
             athan_volume: 0.8,
             notifications: NotificationSettings::default(),
+            audio: AudioSettings::default(),
         }
     }
 }
@@ -159,6 +228,15 @@ mod tests {
         value.as_object_mut().unwrap().remove("notifications");
         let back: Settings = serde_json::from_value(value).unwrap();
         assert_eq!(back.notifications, NotificationSettings::default());
+    }
+
+    #[test]
+    fn a_blob_without_audio_still_loads() {
+        let mut value = serde_json::to_value(Settings::default()).unwrap();
+        value.as_object_mut().unwrap().remove("audio");
+        let back: Settings = serde_json::from_value(value).unwrap();
+        assert_eq!(back.audio, AudioSettings::default());
+        assert_eq!(back.location, Settings::default().location);
     }
 
     #[test]
