@@ -47,6 +47,15 @@
 
 **Prism sketch polish notes (for the Phase 3 visual gate):** volume slider needs a filled track (value affordance); Arabic secondary runs follow one consistent placement rule (English-primary until Phase 6 i18n); column heights stay natural (alignment: start — no dead-space stretching); his acceptance checklist (§9) is the gate, incl. contrast ≥7:1 body / ≥4.5:1 muted.
 
+## Phase 3 prep — COMPLETE (all three docs accepted by Atlas)
+
+- `docs/audio-ui-strings.md` (Quill, 826a6ca): 68 AR/EN keys — accepted.
+- `docs/audio-ui-proposal.md` + `design/audio-settings-sketch.html` (Prism, 6873a7f): structure contract — accepted; polish notes below.
+- `docs/audio-sources.md` (Scout, 07ef5ec): licence ledger — accepted; Sentinel audit triggered.
+
+**Starter pack decision (Atlas, v1):** CC0 only — **A1** `Beautiful_adhan.ogg` (2:34, full athan, default for all prayers) + **A2** `Adhan.ogg` (0:42, short announcement/pre-alert option). A3/A4 (CC BY-SA) stay documented candidates for later packs; the importer must honour share-alike in the manifest. **No Fajr-specific labelling in v1** — no Tier A file is acoustically verified for the Fajr addition; honest generic-athan label until a listening check. Fajr-specific voice = follow-up: Sentinel PDM verdict + unanimous panel on Tier B (B1 Doha / B2 Mishary), never bundled before that.
+**Phase 4 decision:** MIT corpus TEXT first (pinned d793023e), recitation audio only after a separate performance-rights check; OpenDua CC BY 4.0 fallback.
+
 ## Open debt / follow-ups
 
 - **Tray pixel check** (cosmetic): icon registration + full functional path verified; literal taskbar screenshot pending (taskbar auto-hidden during test; do it when naturally visible).
