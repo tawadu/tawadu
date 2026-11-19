@@ -90,8 +90,13 @@ fn spawn_app_in(home: &std::path::Path, extra: &[(&str, &str)]) -> (AppGuard, Ar
     (AppGuard(child), drain(stderr))
 }
 
-/// Pre-seed the isolated settings DB (the app loads it at startup).
+/// Pre-seed the isolated settings DB (the app loads it at startup). The
+/// subdir must mirror `Storage::default_db_path` per OS: macOS nests under
+/// Library/Application Support, Windows (APPDATA) and Linux (XDG) do not.
 fn write_settings(home: &std::path::Path, settings: &tawadu_core::settings::Settings) {
+    #[cfg(target_os = "macos")]
+    let dir = home.join("Library/Application Support/tawadu");
+    #[cfg(not(target_os = "macos"))]
     let dir = home.join("tawadu");
     std::fs::create_dir_all(&dir).expect("create test db dir");
     let storage =
