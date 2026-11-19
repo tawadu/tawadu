@@ -27,7 +27,9 @@ my-pack/
 {
   "format": "tawadu-pack/1",
   "name": "My Pack",
+  "name_ar": "حزمتي",               // optional — Arabic pack name (falls back to name)
   "reciter": "…",
+  "reciter_ar": "…",                // optional — Arabic reciter name (falls back to reciter)
   "description": "…",
   "license": "CC0-1.0",            // SPDX id, or "proprietary"
   "attribution": "Recorded by …",  // exact credit text shown in-app
@@ -57,4 +59,7 @@ my-pack/
 - `sequences` support `sequential` and `shuffle`; a sequence may mix athan and
   athkar clips.
 - All processing is local. Packs never "phone home".
+- `name_ar` / `reciter_ar` are optional; the importer must tolerate their absence.
+- **v1 chime is built-in** (generated, licence-free). A `chime/` folder in packs
+  is a future addendum — v1 importers ignore unknown folders.
 - See [attribution.md](attribution.md) for the current source list.

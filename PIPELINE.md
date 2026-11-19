@@ -40,6 +40,12 @@
 2. **Default** voice = the pack the user marks default; if none marked, the first imported pack; if no packs, the honest empty state (never a guessed pack).
 3. **Supported formats** = the decoder's (symphonia) real runtime list, passed as `{ $formats }` — never hardcoded into copy.
 4. **Remove pack** also deletes its cached render files — the copy "removed from this device" stays true.
+5. **Chime** = built-in generated calm chime for v1 (no asset licence burden); pack-provided chimes are a later format addendum, not v1.
+6. **`name_ar` / `reciter_ar`** = OPTIONAL manifest fields (addendum landed in voice-pack-format.md); importer tolerates absence, falls back to name/reciter.
+7. **Mode override precedence**: user override wins over the manifest default; "Reset to pack default" appears only when an override exists.
+8. **Duration probing at import is mandatory** (symphonia probe); the UI never guesses a duration — unknown renders غير متاح.
+
+**Prism sketch polish notes (for the Phase 3 visual gate):** volume slider needs a filled track (value affordance); Arabic secondary runs follow one consistent placement rule (English-primary until Phase 6 i18n); column heights stay natural (alignment: start — no dead-space stretching); his acceptance checklist (§9) is the gate, incl. contrast ≥7:1 body / ≥4.5:1 muted.
 
 ## Open debt / follow-ups
 
