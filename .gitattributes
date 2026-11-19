@@ -1,0 +1,7 @@
+# Byte-exact pinned assets on EVERY platform (Sentinel Phase 4 N1).
+# core.autocrlf=true used to rewrite these checkouts to CRLF, which broke
+# scripts/verify_athkar_corpus.py (worktree-byte SHA-256 checks) and changed
+# the include_str! compile input. -text disables ALL newline conversion:
+# checkouts stay byte-identical to the committed LF blobs (pinned d793023e).
+assets/athkar/*.json -text
+assets/licenses/*.txt -text

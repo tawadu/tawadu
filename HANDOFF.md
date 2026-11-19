@@ -73,7 +73,7 @@ crates/
     src/locations.rs   354 LOC  28 bundled cities with IANA timezones + search
     src/hijri.rs       101 LOC
     src/qibla.rs        80 LOC
-    src/athkar.rs        1 LOC  stub — Phase 4
+    src/athkar.rs      487 LOC  corpus + contexts + progress math (Phase 4)
     src/lib.rs          22 LOC
   tawadu-audio/    10 LOC  empty skeleton — Phase 3
   tawadu-app/      Slint shell
@@ -324,12 +324,27 @@ and surface a switch in APPEARANCE.
 **This is what the user actually asked for**: many voices, sequence them or shuffle
 them, and cut the athan after a chosen length.
 
-### Step 5 — Phase 4: the athkar engine
+### Step 5 — Phase 4: the athkar engine — DONE (feat/phase4-athkar)
 
-Import a licensed corpus (MIT Hisn al-Muslim is the candidate) into SQLite with
-categories, repetitions and Arabic/English text. Contexts: morning, evening, sleep,
-after-prayer, random, manual. Adaptive windows with catch-up and a "do not repeat
-until read" rule. Then the card shows a **real** dhikr with a **real** progress count.
+Corpus: MIT Hisn al-Muslim TEXT bundled at compile time (`include_str!`,
+pinned d793023e, per-file SHA-256 + `scripts/verify_athkar_corpus.py`;
+ledger `docs/athkar-corpus.md`) — static text needs no runtime IO; SQLite
+(schema v3 `athkar_progress`) persists the REAL per-item repeat counts,
+day-scoped, capped at target, honest reset. Recitation audio NOT bundled
+(performance-rights check pending). Contexts follow the corpus structure:
+Morning/Evening share category 27 (separate per-window progress), Sleep 28,
+AfterPrayer 25; all 132 categories browsable later via manual pick (the
+switcher currently exposes the four timed contexts + Auto). Catch-up
+windows: Fajr→Dhuhr morning, Dhuhr→Asr after-prayer, Asr→Isha evening,
+Isha→Fajr sleep — a late opener never loses the window. "Do not repeat
+until read": the card shows the first UNREAD item; completion requires
+every item at its full target. Home card is real (label + progress +
+tap-through); athkar view: RTL Arabic primary, translation/transliteration
+only where the corpus provides them, tasbih counter, context switcher.
+Quill string keys flagged in `docs/athkar-ui-strings-needed.md`.
+Deferred (ROADMAP tasks 4–5, not in the Phase 4 dispatch scope):
+word-by-word highlighting (no timestamps in the text corpus), share-as-card,
+personal athkar list.
 
 ### Step 6 — Then, in order
 

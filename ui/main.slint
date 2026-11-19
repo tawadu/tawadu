@@ -9,7 +9,7 @@
 //  - Arabic and Latin never share one `text:` string. The bidi algorithm then
 //    reorders the runs and the words come out of line. Each run gets its own Text.
 
-import { CityRow, CreditPack, CreditRow, EventVoiceRow, MethodRow, OptionRow, PackRow, Row, VoiceOption } from "types.slint";
+import { AthkarItemView, CityRow, ContextChip, CreditPack, CreditRow, EventVoiceRow, MethodRow, OptionRow, PackRow, Row, VoiceOption } from "types.slint";
 
 // Design tokens — Plaster theme. Declared here (not in an imported file) so the
 // Rust side can reach the global and switch themes at runtime.
@@ -573,6 +573,12 @@ export component MainWindow inherits Window {
     in property <string> countdown;
     in property <string> next_iqamah;
     in property <string> athkar_text;
+    in property <string> athkar_label;
+    in property <string> athkar_progress;
+    in property <bool> athkar_auto;
+    in property <string> athkar_context_key;
+    in property <[AthkarItemView]> athkar_items;
+    in property <[ContextChip]> athkar_contexts;
     in property <[Row]> rows;
 
     // ---- settings ----
@@ -671,6 +677,12 @@ export component MainWindow inherits Window {
     callback set-athan-trim(int);
     callback dismiss-audio-message();
     callback close-credits();
+    callback open-athkar();
+    callback close-athkar();
+    callback athkar-switch-context(string);
+    callback athkar-follow-window();
+    callback athkar-repeat(int, int);
+    callback athkar-reset();
 
     VerticalLayout {
         padding: 24px;
@@ -815,20 +827,34 @@ export component MainWindow inherits Window {
                     border-color: Palette.border;
                     border-width: 1px;
                     border-radius: Palette.radius;
+                    // Phase 4: tap-through to the real athkar view.
+                    TouchArea {
+                        clicked => { open-athkar(); }
+                    }
                     VerticalLayout {
                         padding: 16px;
                         spacing: 8px;
-                        Text {
-                            text: "MORNING ATHKAR";
-                            font-size: 11px;
-                            letter-spacing: 1px;
-                            color: Palette.ink-muted;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: athkar_label;
+                                font-size: 11px;
+                                letter-spacing: 1px;
+                                color: Palette.ink-muted;
+                            }
+                            Text {
+                                text: athkar_progress;
+                                font-size: 11px;
+                                color: Palette.accent;
+                                horizontal-alignment: end;
+                            }
                         }
                         Text {
                             text: athkar_text;
                             font-size: 18px;
                             color: Palette.ink;
                             horizontal-alignment: end;
+                            wrap: word-wrap;
                         }
                     }
                 }
@@ -1326,6 +1352,121 @@ export component MainWindow inherits Window {
                     triggered => { close-settings(); }
                 }
             }
+            }
+        }
+
+        // ---- athkar (Phase 4: real corpus, real progress, RTL primary) ----
+        if (page == "athkar") : Flickable {
+            VerticalLayout {
+                padding: 24px;
+                spacing: 16px;
+                HorizontalLayout {
+                    spacing: 12px;
+                    Action { label: "إغلاق"; primary: false; triggered => { close-athkar(); } }
+                    Text {
+                        text: athkar_label;
+                        font-size: 20px;
+                        font-weight: 600;
+                        color: Palette.ink;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: athkar_progress;
+                        font-size: 14px;
+                        color: Palette.accent;
+                        vertical-alignment: center;
+                        horizontal-alignment: end;
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    // Auto: follow the prayer-window context again.
+                    Rectangle {
+                        height: 30px;
+                        width: auto-label.preferred-width + 20px;
+                        border-radius: 15px;
+                        background: athkar_auto ? Palette.accent : Palette.surface;
+                        border-color: Palette.border;
+                        border-width: 1px;
+                        auto-label := Text {
+                            text: "Auto";
+                            font-size: 12px;
+                            color: athkar_auto ? Palette.surface : Palette.ink;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        TouchArea { clicked => { athkar-follow-window(); } }
+                    }
+                    for chip in athkar_contexts: Rectangle {
+                        height: 30px;
+                        width: chip-label.preferred-width + 20px;
+                        border-radius: 15px;
+                        background: chip.active ? Palette.accent : Palette.surface;
+                        border-color: Palette.border;
+                        border-width: 1px;
+                        chip-label := Text {
+                            text: chip.label;
+                            font-size: 12px;
+                            color: chip.active ? Palette.surface : Palette.ink;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        TouchArea { clicked => { athkar-switch-context(chip.key); } }
+                    }
+                }
+                Action { label: "Reset"; primary: false; triggered => { athkar-reset(); } }
+                for item in athkar_items: Rectangle {
+                    background: Palette.surface;
+                    border-color: item.complete ? Palette.accent : Palette.border;
+                    border-width: 1px;
+                    border-radius: Palette.radius;
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 8px;
+                        Text {
+                            text: item.arabic;
+                            font-size: 18px;
+                            color: Palette.ink;
+                            horizontal-alignment: end;
+                            wrap: word-wrap;
+                        }
+                        if (item.translation != "") : Text {
+                            text: item.translation;
+                            font-size: 12px;
+                            color: Palette.ink-muted;
+                            wrap: word-wrap;
+                        }
+                        if (item.transliteration != "") : Text {
+                            text: item.transliteration;
+                            font-size: 12px;
+                            color: Palette.ink-muted;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: item.reference;
+                                font-size: 10px;
+                                color: Palette.ink-muted;
+                                vertical-alignment: center;
+                            }
+                            Rectangle {
+                                height: 30px;
+                                width: 70px;
+                                border-radius: 15px;
+                                background: item.complete ? Palette.accent : Palette.surface-secondary;
+                                Text {
+                                    text: item.complete ? "✓" : item.counter;
+                                    font-size: 12px;
+                                    color: item.complete ? Palette.surface : Palette.ink;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                TouchArea { clicked => { athkar-repeat(item.category, item.item-id); } }
+                            }
+                        }
+                    }
+                }
             }
         }
 
