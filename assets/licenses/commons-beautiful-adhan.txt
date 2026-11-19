@@ -1,0 +1,18 @@
+Source:      https://commons.wikimedia.org/wiki/File:Beautiful_adhan.ogg
+Author:      Adam-synagda
+Licence:     CC0-1.0
+Version:     2022-04-29 (upload date); fetched 2026-11-19, live-verified
+SHA-256:     35fe06b08fe80505c550c33fed8a783fa9901ddc81ac884958b4be048f5b2a79
+Bytes:       1229032
+Attribution: Beautiful adhan — Adam-synagda — Wikimedia Commons, 2022-04-29 — https://commons.wikimedia.org/wiki/File:Beautiful_adhan.ogg — CC0 1.0 Universal (https://creativecommons.org/publicdomain/zero/1.0/).
+
+Licence deed: https://creativecommons.org/publicdomain/zero/1.0/
+CC0 1.0 Universal: the author has dedicated the work to the public domain by
+waiving all of his or her rights to the work worldwide under copyright law.
+You can copy, modify, distribute and perform the work, even for commercial
+purposes, all without asking permission. The credit above is supplied
+voluntarily (CC0 imposes no attribution duty) and is shown in-app as provided.
+
+Provenance: downloaded 2026-11-19 via the Commons imageinfo API
+(scripts/fetch_starter_assets.py); SHA-256 and byte count match the ledger in
+docs/audio-sources.md (A1) exactly. Re-verify: scripts/verify_audio_sources.py.

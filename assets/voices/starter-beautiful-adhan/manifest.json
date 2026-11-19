@@ -1,0 +1,27 @@
+{
+  "format": "tawadu-pack/1",
+  "name": "Beautiful Adhan",
+  "reciter": "Adam-synagda",
+  "description": "Full adhan recording (2:34). Generic athan for all five prayers — not Fajr-labelled: no Tier A file is acoustically verified for the Fajr addition.",
+  "license": "CC0-1.0",
+  "attribution": "Beautiful adhan — Adam-synagda — Wikimedia Commons, 2022-04-29 — https://commons.wikimedia.org/wiki/File:Beautiful_adhan.ogg — CC0 1.0 Universal (https://creativecommons.org/publicdomain/zero/1.0/).",
+  "source_url": "https://commons.wikimedia.org/wiki/File:Beautiful_adhan.ogg",
+  "version": "1.0.0",
+  "updated": "2026-11-19",
+  "files": {
+    "athan/beautiful_adhan.ogg": {
+      "sha256": "35fe06b08fe80505c550c33fed8a783fa9901ddc81ac884958b4be048f5b2a79",
+      "license": "CC0-1.0"
+    }
+  },
+  "sequences": {
+    "fajr": { "mode": "sequential", "clips": ["athan/beautiful_adhan.ogg"] },
+    "dhuhr": { "mode": "sequential", "clips": ["athan/beautiful_adhan.ogg"] },
+    "asr": { "mode": "sequential", "clips": ["athan/beautiful_adhan.ogg"] },
+    "maghrib": { "mode": "sequential", "clips": ["athan/beautiful_adhan.ogg"] },
+    "isha": { "mode": "sequential", "clips": ["athan/beautiful_adhan.ogg"] }
+  },
+  "edits": {
+    "athan/beautiful_adhan.ogg": { "fade_in_ms": 0, "fade_out_ms": 400 }
+  }
+}

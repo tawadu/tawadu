@@ -1,0 +1,27 @@
+{
+  "format": "tawadu-pack/1",
+  "name": "Adhan Announcement",
+  "reciter": "Aishatu98",
+  "description": "Short announcement that prayer is about to start (0:42). Suited to pre-alerts and iqamah — not a full adhan.",
+  "license": "CC0-1.0",
+  "attribution": "Adhan — Aishatu98 — Wikimedia Commons, 2026-07-15 — https://commons.wikimedia.org/wiki/File:Adhan.ogg — CC0 1.0 Universal (https://creativecommons.org/publicdomain/zero/1.0/).",
+  "source_url": "https://commons.wikimedia.org/wiki/File:Adhan.ogg",
+  "version": "1.0.0",
+  "updated": "2026-11-19",
+  "files": {
+    "athan/adhan.ogg": {
+      "sha256": "faeb03e4338554fb8b54dba98ed4949648615b58e991bbd560a89f4837dde413",
+      "license": "CC0-1.0"
+    }
+  },
+  "sequences": {
+    "fajr": { "mode": "sequential", "clips": ["athan/adhan.ogg"] },
+    "dhuhr": { "mode": "sequential", "clips": ["athan/adhan.ogg"] },
+    "asr": { "mode": "sequential", "clips": ["athan/adhan.ogg"] },
+    "maghrib": { "mode": "sequential", "clips": ["athan/adhan.ogg"] },
+    "isha": { "mode": "sequential", "clips": ["athan/adhan.ogg"] }
+  },
+  "edits": {
+    "athan/adhan.ogg": { "fade_in_ms": 0, "fade_out_ms": 400 }
+  }
+}
