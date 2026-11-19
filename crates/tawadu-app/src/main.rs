@@ -563,11 +563,15 @@ fn announce(
     now: DateTime<Utc>,
 ) -> Option<(String, String)> {
     let kind = event_kind(event.kind)?;
-    let local_now = location.local(now);
-    if !notify::should_notify(kind, &settings.notifications, local_now.time()) {
+    // Quiet hours are judged at the EVENT's local time, not the fire time:
+    // a late fire (sleep/wake) must not sneak a quiet-hours alert past the
+    // window, nor silence an alert whose event fell outside it. The athan
+    // is essential and bypasses quiet hours entirely (should_notify).
+    let event_local = location.local(event.at);
+    if !notify::should_notify(kind, &settings.notifications, event_local.time()) {
         return None;
     }
-    let at = location.local(event.at).format("%H:%M").to_string();
+    let at = event_local.format("%H:%M").to_string();
     let (title, body) = match kind {
         NotificationKind::PreAlert => {
             // The alert fires pre_alert_minutes BEFORE the prayer; show the
@@ -1316,5 +1320,44 @@ mod tests {
         let (title, body) = announce(&event, &riyadh(), &settings, event.at).expect("announced");
         assert_eq!(title, "Athan · Fajr");
         assert_eq!(body, "It is time for Fajr prayer · 04:51");
+    }
+
+    fn quiet_settings() -> Settings {
+        let mut settings = Settings::default();
+        settings.notifications.quiet_hours_enabled = true;
+        settings.notifications.quiet_from = "22:00".parse().unwrap();
+        settings.notifications.quiet_to = "06:00".parse().unwrap();
+        settings
+    }
+
+    #[test]
+    fn quiet_hours_judged_at_event_time_suppress_a_late_fire() {
+        // Event 23:00 Riyadh (inside quiet); fires 06:30 Riyadh (outside,
+        // e.g. after sleep). Judging at fire time would wrongly notify.
+        let event = pre_alert("2026-11-19T20:00:00Z".parse().unwrap());
+        let fire = "2026-11-20T03:30:00Z".parse().unwrap();
+        assert!(announce(&event, &riyadh(), &quiet_settings(), fire).is_none());
+    }
+
+    #[test]
+    fn quiet_hours_judged_at_event_time_notify_when_the_event_was_outside() {
+        // Event 07:00 Riyadh (outside quiet); fires 23:30 Riyadh (inside).
+        // Judging at fire time would wrongly silence it.
+        let event = pre_alert("2026-11-19T04:00:00Z".parse().unwrap());
+        let fire = "2026-11-19T20:30:00Z".parse().unwrap();
+        assert!(announce(&event, &riyadh(), &quiet_settings(), fire).is_some());
+    }
+
+    #[test]
+    fn athan_is_never_suppressed_even_inside_quiet_hours() {
+        let event = scheduler::Event {
+            kind: EventKind::Prayer,
+            label: "Fajr",
+            at: "2026-11-19T20:00:00Z".parse().unwrap(), // 23:00 Riyadh
+        };
+        assert!(
+            announce(&event, &riyadh(), &quiet_settings(), event.at).is_some(),
+            "the athan is essential and bypasses quiet hours"
+        );
     }
 }
