@@ -560,18 +560,35 @@ fn announce(
     event: &scheduler::Event,
     location: &Location,
     settings: &Settings,
+    now: DateTime<Utc>,
 ) -> Option<(String, String)> {
     let kind = event_kind(event.kind)?;
-    let local_now = location.local(now());
+    let local_now = location.local(now);
     if !notify::should_notify(kind, &settings.notifications, local_now.time()) {
         return None;
     }
     let at = location.local(event.at).format("%H:%M").to_string();
     let (title, body) = match kind {
-        NotificationKind::PreAlert => (
-            format!("{} in {} min", event.label, settings.pre_alert_minutes),
-            format!("{} at {} · {}", event.label, at, location.name),
-        ),
+        NotificationKind::PreAlert => {
+            // The alert fires pre_alert_minutes BEFORE the prayer; show the
+            // prayer's own time (exact by construction: scheduler::build
+            // places the alert at prayer_at - pre_alert_minutes), and floor
+            // the LIVE remaining minutes so a late fire never contradicts
+            // the countdown ("in 10 min" next to 00:09:50).
+            let prayer_at =
+                event.at + chrono::Duration::minutes(i64::from(settings.pre_alert_minutes));
+            let minutes = (prayer_at - now).num_minutes().max(0);
+            let title = if minutes == 0 {
+                format!("{} now", event.label)
+            } else {
+                format!("{} in {} min", event.label, minutes)
+            };
+            let prayer_time = location.local(prayer_at).format("%H:%M");
+            (
+                title,
+                format!("{} at {} · {}", event.label, prayer_time, location.name),
+            )
+        }
         NotificationKind::Athan => (
             format!("Athan · {}", event.label),
             format!("It is time for {} prayer · {}", event.label, at),
@@ -654,7 +671,7 @@ fn spawn_scheduler(
                     fired_at,
                     chrono::Duration::seconds(LATE_TOLERANCE_SECONDS),
                 ) {
-                    if let Some((title, body)) = announce(&event, &location, &settings) {
+                    if let Some((title, body)) = announce(&event, &location, &settings, now()) {
                         log::info!("firing {} · {} — {}", event.kind.key(), event.at, title);
                         let _ = notices.send(Notice::Banner {
                             title: title.clone(),
@@ -1216,7 +1233,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         debug_timers.push(timer);
     }
 
-    ui.run()?;
+    // Sentinel hardening: a platform event-loop failure must be visible at
+    // app level, not just propagate as main's Err.
+    if let Err(error) = ui.run() {
+        log::error!("event loop failed: {error}");
+        return Err(error.into());
+    }
     Ok(())
 }
 
@@ -1241,5 +1263,58 @@ mod tests {
         assert_eq!(parse_slice_ms(Some("")), Duration::from_secs(60));
         // A zero slice would busy-loop the scheduler thread.
         assert_eq!(parse_slice_ms(Some("0")), Duration::from_secs(60));
+    }
+
+    fn riyadh() -> tawadu_core::locations::Location {
+        find_city("Riyadh").expect("Riyadh in the city DB")
+    }
+
+    fn pre_alert(at: DateTime<Utc>) -> scheduler::Event {
+        scheduler::Event {
+            kind: EventKind::PreAlert,
+            label: "Fajr",
+            at,
+        }
+    }
+
+    #[test]
+    fn pre_alert_body_shows_the_prayer_time_not_the_alert_time() {
+        let settings = Settings::default(); // pre_alert_minutes = 10
+        let event = pre_alert("2026-11-19T01:41:00Z".parse().unwrap());
+        let (_, body) = announce(&event, &riyadh(), &settings, event.at).expect("announced");
+        // The prayer is 01:51Z = 04:51 Riyadh; the alert itself is 04:41.
+        assert_eq!(body, "Fajr at 04:51 · Riyadh");
+    }
+
+    #[test]
+    fn pre_alert_headline_floors_the_live_remaining_minutes() {
+        let settings = Settings::default();
+        let event = pre_alert("2026-11-19T01:41:00Z".parse().unwrap());
+        // Fired 90 s late: 8 min 30 s remain, not the static "10 min".
+        let now = event.at + chrono::Duration::seconds(90);
+        let (title, _) = announce(&event, &riyadh(), &settings, now).expect("announced");
+        assert_eq!(title, "Fajr in 8 min");
+    }
+
+    #[test]
+    fn pre_alert_headline_says_now_when_under_a_minute_remains() {
+        let settings = Settings::default();
+        let event = pre_alert("2026-11-19T01:41:00Z".parse().unwrap());
+        let now = event.at + chrono::Duration::seconds(9 * 60 + 30);
+        let (title, _) = announce(&event, &riyadh(), &settings, now).expect("announced");
+        assert_eq!(title, "Fajr now");
+    }
+
+    #[test]
+    fn athan_copy_names_the_prayer_and_its_time() {
+        let settings = Settings::default();
+        let event = scheduler::Event {
+            kind: EventKind::Prayer,
+            label: "Fajr",
+            at: "2026-11-19T01:51:00Z".parse().unwrap(),
+        };
+        let (title, body) = announce(&event, &riyadh(), &settings, event.at).expect("announced");
+        assert_eq!(title, "Athan · Fajr");
+        assert_eq!(body, "It is time for Fajr prayer · 04:51");
     }
 }
