@@ -93,7 +93,7 @@ docs/              ROADMAP.md (plan of record), architecture.md, adr/, voice-pac
 - **Branch:** `main`. **HEAD at handoff:** `d8d8b1e`
 - **Git identity is repo-local:** `XGradien <173515018+XGradien@users.noreply.github.com>`
 - **Working tree is clean.**
-- **Tests:** 82 (60 core + 21 app unit + 1 process-level tray lifecycle; macOS adds 1 socket-permission test), `fmt` + `clippy -D warnings` clean, CI green on all 3 OSes.
+- **Tests:** 104 (69 core + 34 app unit + 1 process-level lifecycle, 5 phases; macOS adds 1 socket-permission test), `fmt` + `clippy -D warnings` clean.
 
 ### Build and verify
 
@@ -122,7 +122,8 @@ The app reads three env vars, all off by default:
 | `TAWADU_DEBUG_TIME_SCALE` | multiplies elapsed real time (e.g. `12` = 60 s behaves as 12 min) |
 | `TAWADU_DEBUG_BANNER_MS` | overrides the 8 s banner auto-hide |
 | `TAWADU_DEBUG_AUTOCLOSE_MS` | dispatches a real `CloseRequested` after N ms (tray regression test) |
-| `TAWADU_DEBUG_AUTOQUIT_MS` | calls `quit_event_loop()` after N ms (tray regression test) |
+| `TAWADU_DEBUG_AUTOQUIT_MS` | calls `quit_event_loop()` after N ms (tray regression test); flushes pending debounced save |
+| `TAWADU_DEBUG_TOUCH_SETTING_MS` | mutates `pre_alert_minutes` to 15 via the normal change path after N ms (debounce durability test) |
 | `TAWADU_DEBUG_MAX_SLICE_MS` | overrides the scheduler's 60 s max sleep slice (REAL time). Needed at high time scales: a 60 s slice at scale 12 advances the debug clock 720 s, past the 120 s late tolerance, so every event is dropped. Use `5000` with scale 12 |
 
 This is how the sleep/wake path was proven without putting the machine to sleep:
@@ -167,7 +168,9 @@ fires the athan and iqamah while correctly dropping the stale pre-alert.
 
 - **Scheduler thread**: sleeps in ≤60 s slices, recomputes every slice (correct across
   clock change, wake, and settings edits), sweeps `(watermark, now]` after each wake,
-  drops events older than 120 s.
+  drops events older than 120 s. **Product rule (Sentinel confirmed, Atlas ratified):
+  events >120 s late are intentionally NEVER announced — a 20-min-late athan is worse
+  than silence; the home screen still shows the correct next prayer.**
 - **OS notifications** via `notify-rust` **plus an always-shown in-app banner** — the
   banner is the correctness floor, because `notify-rust` returning `Ok` is not proof a
   toast appeared (an unpackaged Windows exe needs an AUMID).
@@ -214,12 +217,28 @@ fires the athan and iqamah while correctly dropping the stale pre-alert.
 
 ### Known defects, recorded but not fixed
 
-5. **No fired-event ledger** — a restart within 120 s of an event re-announces it.
-6. **Quiet hours are evaluated at fire time, not event time**, so a late event after
-   wake is judged against the wrong wall clock.
-7. **Settings save only on the حفظ button**, while Phase 1 specifies a debounced
-   save-on-change. **Code and doc disagree — pick one.**
-8. **No autostart.** `start_at_login` exists in `Settings` but nothing reads it.
+5. ~~**No fired-event ledger** — a restart within 120 s of an event re-announces it.~~
+   **RESOLVED (Steps 2–3):** schema-v2 `fired` ledger keyed on the EXACT
+   (kind, prayer, scheduled instant) triple — existence check, no range comparison,
+   so a schedule shifted by a method/location change is a NEW event (never silently
+   skipped). The fire is persisted BEFORE the announcement, recording `event.at`
+   (scheduled instant, never fire wall-time); `fireable` filters fail-open.
+6. ~~**Quiet hours are evaluated at fire time, not event time**~~ **RESOLVED
+   (Steps 2–3):** judged at the event's scheduled local instant; the athan is
+   essential (`is_essential()` returns before the quiet-hours check) and never suppressed.
+7. ~~**Settings save only on the حفظ button**, while Phase 1 specifies a debounced
+   save-on-change. **Code and doc disagree — pick one.**~~ **RESOLVED (Steps 2–3):**
+   debounced save-on-change implemented — 800 ms after the last mutation
+   (drained on a 200 ms UI tick, status-only feedback), حفظ remains an immediate
+   save that cancels any pending debounce write. Pending writes flush on quit,
+   hide-to-tray and loop exit. Residual window: a hard kill with no quit/hide
+   inside the <800 ms debounce can lose the trailing write (documented limit;
+   only write-through would close it). Quiet-hours semantics: judged at the
+   event's scheduled local instant — for PreAlert that is the ALERT instant
+   (prayer − N), intentionally, not the prayer instant.
+8. ~~**No autostart.**~~ **RESOLVED (Steps 2–3):** opt-in toggle in APPEARANCE
+   (default OFF, `serde(default)` so old DBs upgrade to OFF); startup reconcile is
+   idempotent and re-registers when the exe path moved (Windows HKCU Run path check).
 
 ### Debt and unknowns
 
@@ -287,8 +306,9 @@ and surface a switch in APPEARANCE.
 - A **fired-event ledger** (persist the last fired `event.at` per kind) so a restart
   does not re-announce.
 - Evaluate quiet hours at **event time**, not fire time.
-- **Pick the save model** and make code and doc agree (recommend debounced
-  save-on-change, as documented).
+- ~~**Pick the save model** and make code and doc agree (recommend debounced
+  save-on-change, as documented).~~ **Done (Steps 2–3):** debounced
+  save-on-change (800 ms) implemented; حفظ stays immediate.
 
 ### Step 4 — Phase 3: audio
 
@@ -361,11 +381,11 @@ Phase 7 (mobile, only after Phase 6).
 |---|---|
 | Repo | https://github.com/tawadu/tawadu |
 | Plan of record | `docs/ROADMAP.md` |
-| Tests | 82 (60 core + 21 app unit + 1 tray lifecycle; +1 macOS-only) |
+| Tests | 104 (69 core + 34 app unit + 1 lifecycle, 5 phases; +1 macOS-only) |
 | Settings DB | `%APPDATA%\tawadu\tawadu.db` (Windows) |
 | Default settings | Riyadh · Umm al-Qura · pre-alert 10 · all notifications on · quiet hours 22:00–06:00 (off) |
 | Verified timings 2026-11-17 | Riyadh: Fajr 04:49 · Sunrise 06:11 · Dhuhr 11:38 · Asr 14:44 · Maghrib 17:06 · Isha 18:36 (UTC+3) |
-| Debug clock | `TAWADU_DEBUG_NOW`, `TAWADU_DEBUG_TIME_SCALE`, `TAWADU_DEBUG_BANNER_MS`, `TAWADU_DEBUG_AUTOCLOSE_MS`, `TAWADU_DEBUG_AUTOQUIT_MS`, `TAWADU_DEBUG_MAX_SLICE_MS` |
+| Debug clock | `TAWADU_DEBUG_NOW`, `TAWADU_DEBUG_TIME_SCALE`, `TAWADU_DEBUG_BANNER_MS`, `TAWADU_DEBUG_AUTOCLOSE_MS`, `TAWADU_DEBUG_AUTOQUIT_MS`, `TAWADU_DEBUG_MAX_SLICE_MS`, `TAWADU_DEBUG_TOUCH_SETTING_MS` |
 
 **First thing to do:** read `docs/ROADMAP.md` end to end, run the green gate, launch
 the app, and confirm the home screen shows Riyadh with a live countdown. Then Step 1.

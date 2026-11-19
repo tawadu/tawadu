@@ -4,11 +4,12 @@
 //! Only settings exist so far; the remaining tables arrive with their features.
 
 use crate::settings::Settings;
+use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
 
 /// Current schema version. Bump on every migration.
-pub const SCHEMA_VERSION: i32 = 1;
+pub const SCHEMA_VERSION: i32 = 2;
 
 /// The result of loading settings, with every case kept distinct.
 ///
@@ -87,6 +88,12 @@ impl Storage {
                  id INTEGER PRIMARY KEY CHECK (id = 1),
                  json TEXT NOT NULL,
                  updated_at TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS fired (
+                 kind TEXT NOT NULL,
+                 prayer TEXT NOT NULL,
+                 at TEXT NOT NULL,
+                 PRIMARY KEY (kind, prayer, at)
              );",
         )?;
         self.conn.execute(
@@ -104,6 +111,41 @@ impl Storage {
             |row| row.get::<_, String>(0),
         )?;
         Ok(value.parse().unwrap_or(0))
+    }
+
+    /// Record that an event was actually announced. Identity is the EXACT
+    /// (kind, prayer, scheduled instant) triple — a schedule recomputed to a
+    /// different instant (method/location change) is a NEW event, never
+    /// suppressed by an older fire. Idempotent insert; growth is a few rows
+    /// per day.
+    pub fn record_fired(
+        &self,
+        kind: &str,
+        prayer: &str,
+        at: DateTime<Utc>,
+    ) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO fired (kind, prayer, at) VALUES (?1, ?2, ?3)",
+            params![kind, prayer, at.to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    /// Whether this exact event identity was already announced. Existence
+    /// only — no range comparison, so a shifted schedule can never be
+    /// silently skipped.
+    pub fn has_fired(
+        &self,
+        kind: &str,
+        prayer: &str,
+        at: DateTime<Utc>,
+    ) -> Result<bool, rusqlite::Error> {
+        let count: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM fired WHERE kind = ?1 AND prayer = ?2 AND at = ?3",
+            params![kind, prayer, at.to_rfc3339()],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
     }
 
     /// Save the settings blob (single row, id = 1).
@@ -266,5 +308,113 @@ mod tests {
     fn records_the_schema_version() {
         let storage = Storage::open_in_memory().unwrap();
         assert_eq!(storage.schema_version().unwrap(), SCHEMA_VERSION);
+    }
+
+    fn instant(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+
+    #[test]
+    fn ledger_round_trips_a_fired_event() {
+        let storage = Storage::open_in_memory().unwrap();
+        let at = instant("2026-11-19T01:41:00Z");
+        storage.record_fired("pre_alert", "Fajr", at).unwrap();
+        assert!(storage.has_fired("pre_alert", "Fajr", at).unwrap());
+        // Exact identity: a different instant is a different event.
+        assert!(!storage
+            .has_fired("pre_alert", "Fajr", at + chrono::Duration::seconds(1))
+            .unwrap());
+    }
+
+    #[test]
+    fn ledger_is_empty_before_any_fire() {
+        let storage = Storage::open_in_memory().unwrap();
+        let at = instant("2026-11-19T01:41:00Z");
+        assert!(!storage.has_fired("prayer", "Fajr", at).unwrap());
+    }
+
+    #[test]
+    fn ledger_records_each_instant_and_repeats_are_idempotent() {
+        let storage = Storage::open_in_memory().unwrap();
+        let first = instant("2026-11-19T01:41:00Z");
+        let second = instant("2026-11-20T01:42:00Z");
+        storage.record_fired("pre_alert", "Fajr", first).unwrap();
+        storage.record_fired("pre_alert", "Fajr", first).unwrap();
+        storage.record_fired("pre_alert", "Fajr", second).unwrap();
+        assert!(storage.has_fired("pre_alert", "Fajr", first).unwrap());
+        assert!(storage.has_fired("pre_alert", "Fajr", second).unwrap());
+    }
+
+    #[test]
+    fn ledger_identities_are_independent() {
+        let storage = Storage::open_in_memory().unwrap();
+        let at = instant("2026-11-19T01:41:00Z");
+        storage.record_fired("pre_alert", "Fajr", at).unwrap();
+        // Same prayer, different kind; same kind, different prayer.
+        assert!(!storage.has_fired("prayer", "Fajr", at).unwrap());
+        assert!(!storage.has_fired("pre_alert", "Dhuhr", at).unwrap());
+    }
+
+    #[test]
+    fn ledger_schedule_shift_is_a_new_event() {
+        // Sentinel's missed-fire path: user switches method/location mid-day
+        // and Dhuhr's pre-alert recomputes EARLIER (11:28 -> 11:26 Riyadh).
+        // The stored 11:28 must NOT suppress the new 11:26 event.
+        let storage = Storage::open_in_memory().unwrap();
+        let old = instant("2026-11-19T08:28:00Z");
+        storage.record_fired("pre_alert", "Dhuhr", old).unwrap();
+        let shifted = instant("2026-11-19T08:26:00Z");
+        assert!(storage.has_fired("pre_alert", "Dhuhr", old).unwrap());
+        assert!(
+            !storage.has_fired("pre_alert", "Dhuhr", shifted).unwrap(),
+            "a shifted schedule must read as a NEW event, not be suppressed"
+        );
+    }
+
+    #[test]
+    fn ledger_survives_reopen_and_v1_databases_migrate() {
+        // A schema-v1 file (settings only) must gain the ledger on open
+        // without losing the saved settings.
+        let path = std::env::temp_dir().join(format!(
+            "tawadu-ledger-migration-{}-{}.db",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let _ = std::fs::remove_file(&path);
+        {
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 CREATE TABLE settings (
+                     id INTEGER PRIMARY KEY CHECK (id = 1),
+                     json TEXT NOT NULL,
+                     updated_at TEXT NOT NULL
+                 );",
+            )
+            .unwrap();
+            old.execute(
+                "INSERT INTO meta (key, value) VALUES ('schema_version', '1')",
+                [],
+            )
+            .unwrap();
+            let json = serde_json::to_string(&Settings::default()).unwrap();
+            old.execute(
+                "INSERT INTO settings (id, json, updated_at) VALUES (1, ?1, 'then')",
+                params![json],
+            )
+            .unwrap();
+        }
+        let storage = Storage::open(&path).unwrap();
+        assert_eq!(storage.schema_version().unwrap(), SCHEMA_VERSION);
+        assert_eq!(
+            storage.load_settings(),
+            LoadOutcome::Loaded(Settings::default())
+        );
+        let at = instant("2026-11-19T01:41:00Z");
+        storage.record_fired("prayer", "Fajr", at).unwrap();
+        drop(storage);
+        let reopened = Storage::open(&path).unwrap();
+        assert!(reopened.has_fired("prayer", "Fajr", at).unwrap());
+        let _ = std::fs::remove_file(&path);
     }
 }

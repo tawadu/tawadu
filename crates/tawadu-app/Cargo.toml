@@ -20,6 +20,7 @@ notify-rust.workspace = true
 single-instance.workspace = true
 tray-icon.workspace = true
 muda.workspace = true
+auto-launch = "0.6.0"
 
 [build-dependencies]
 slint-build = "=1.19.0"
@@ -41,3 +42,6 @@ windows = { version = "0.62", features = [
 # they cannot unify.
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "5"
+
+[target."cfg(windows)".dependencies]
+windows-registry = "0.6"

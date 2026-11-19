@@ -6,6 +6,7 @@
 //! Rust owns all state. The interface reports edits back through callbacks and
 //! nothing in `.slint` persists anything by itself.
 
+mod autostart;
 mod cli;
 mod restore;
 mod tray;
@@ -13,7 +14,7 @@ mod tray;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, NaiveTime, Utc};
 use slint::{ModelRc, SharedString, Timer, TimerMode, VecModel};
@@ -48,6 +49,53 @@ const METHODS: [(&str, &str, &str); 12] = [
     ("turkey", "Turkey", "تركيا"),
 ];
 
+/// Debounce decision for save-on-change: a save is due once `delay` has
+/// passed since the LAST change; every change restarts the window. Pure
+/// logic (injectable instants) so the policy is unit-testable; the UI thread
+/// drains it on a short tick.
+#[derive(Debug)]
+struct SaveDebounce {
+    delay: Duration,
+    pending_since: Option<Instant>,
+}
+
+impl SaveDebounce {
+    fn new(delay: Duration) -> Self {
+        Self {
+            delay,
+            pending_since: None,
+        }
+    }
+
+    /// A setting changed: (re)start the debounce window.
+    fn touch(&mut self, now: Instant) {
+        self.pending_since = Some(now);
+    }
+
+    /// An immediate save (حفظ) supersedes any pending debounce.
+    fn cancel(&mut self) {
+        self.pending_since = None;
+    }
+
+    /// Force the pending write out (quit / hide / exit): true when a save
+    /// was pending. Survives abrupt exit before the debounce timer fires.
+    fn flush(&mut self) -> bool {
+        self.pending_since.take().is_some()
+    }
+
+    /// True exactly once when the window has elapsed; clears the pending
+    /// save so the next tick does not write again.
+    fn take_if_due(&mut self, now: Instant) -> bool {
+        match self.pending_since {
+            Some(since) if now.duration_since(since) >= self.delay => {
+                self.pending_since = None;
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
 /// Everything the interface can change, plus where it is kept.
 struct AppState {
     settings: Settings,
@@ -55,6 +103,10 @@ struct AppState {
     status: String,
     /// Tells the scheduler to recompute now rather than at the end of its slice.
     wake: Option<Arc<mpsc::Sender<()>>>,
+    /// Save-on-change debounce (800 ms after the last mutation). RefCell so
+    /// `changed(&self)` can mark it without widening every call site; the
+    /// AppState Mutex already serializes access.
+    debounce: std::cell::RefCell<SaveDebounce>,
 }
 
 /// Decode a serde snake_case key back into a config value.
@@ -347,6 +399,7 @@ fn apply_settings(ui: &MainWindow, state: &AppState) {
     ui.set_notif_athkar(n.athkar);
     ui.set_notif_system(n.system);
     ui.set_quiet_hours_enabled(n.quiet_hours_enabled);
+    ui.set_start_at_login(settings.start_at_login);
     ui.set_quiet_from(n.quiet_from.format("%H:%M").to_string().into());
     ui.set_quiet_to(n.quiet_to.format("%H:%M").to_string().into());
     ui.set_location_query(location.name.clone().into());
@@ -453,11 +506,21 @@ impl AppState {
         };
     }
 
-    /// A setting changed, so the day timeline may have changed with it.
+    /// Flush a pending debounced save immediately (quit / hide / exit), so
+    /// the trailing write survives an abrupt exit mid-debounce.
+    fn flush_save(&mut self) {
+        if self.debounce.borrow_mut().flush() {
+            self.save();
+        }
+    }
+
+    /// A setting changed: wake the scheduler (the timeline may have changed)
+    /// and (re)start the debounced save-on-change window.
     fn changed(&self) {
         if let Some(wake) = &self.wake {
             let _ = wake.send(());
         }
+        self.debounce.borrow_mut().touch(Instant::now());
     }
 }
 
@@ -567,6 +630,12 @@ fn announce(
     // a late fire (sleep/wake) must not sneak a quiet-hours alert past the
     // window, nor silence an alert whose event fell outside it. The athan
     // is essential and bypasses quiet hours entirely (should_notify).
+    //
+    // SEMANTICS (intentional — do not "fix"): PreAlert's event.at is the
+    // ALERT instant (prayer time minus pre_alert_minutes), so quiet hours
+    // bind to the alert instant, not the prayer instant. A pre-alert that
+    // falls inside quiet hours is suppressed even when the prayer itself
+    // falls outside them; that is the user's quiet window speaking.
     let event_local = location.local(event.at);
     if !notify::should_notify(kind, &settings.notifications, event_local.time()) {
         return None;
@@ -670,12 +739,49 @@ fn spawn_scheduler(
                 }
 
                 let fired_at = now();
-                for event in timeline.due(
+                let due = timeline.due(
                     watermark,
                     fired_at,
                     chrono::Duration::seconds(LATE_TOLERANCE_SECONDS),
-                ) {
+                );
+                // Ledger filter: skip already-announced EXACT identities
+                // (kind, prayer, scheduled instant). Read errors fail open
+                // (false -> fire): a broken ledger must never silence.
+                let fireable = scheduler::fireable(due, |event| {
+                    let guard = state.lock().unwrap();
+                    let fired = guard
+                        .storage
+                        .as_ref()
+                        .and_then(|storage| {
+                            storage
+                                .has_fired(event.kind.key(), event.label, event.at)
+                                .ok()
+                        })
+                        .unwrap_or(false);
+                    if fired {
+                        log::info!("skipping already-fired {} · {}", event.kind.key(), event.at);
+                    }
+                    fired
+                });
+                for event in fireable {
                     if let Some((title, body)) = announce(&event, &location, &settings, now()) {
+                        // Transactional order: persist the fire BEFORE the
+                        // announcement, so a crash after announcing can never
+                        // re-announce on restart. Record event.at — the
+                        // SCHEDULED instant, NEVER the fire wall-time: a late
+                        // fire recorded as wall-time would widen the dedupe
+                        // identity and suppress the true event later. Write
+                        // failure is logged and fails open (alert still goes).
+                        {
+                            let guard = state.lock().unwrap();
+                            if let Some(storage) = guard.storage.as_ref() {
+                                if let Err(error) =
+                                    storage.record_fired(event.kind.key(), event.label, event.at)
+                                {
+                                    log::warn!("fired-ledger write failed: {error}");
+                                }
+                            }
+                        }
                         log::info!("firing {} · {} — {}", event.kind.key(), event.at, title);
                         let _ = notices.send(Notice::Banner {
                             title: title.clone(),
@@ -776,10 +882,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         storage,
         status: String::new(),
         wake: None,
+        debounce: std::cell::RefCell::new(SaveDebounce::new(Duration::from_millis(800))),
     }));
 
     let (wake_tx, wake_rx) = mpsc::channel::<()>();
     state.lock().unwrap().wake = Some(Arc::new(wake_tx));
+
+    // Opt-in autostart: reconcile the registration against the setting on
+    // every launch (on-but-missing → register; off-but-stale → unregister).
+    autostart::reconcile_at_startup(state.lock().unwrap().settings.start_at_login);
 
     let ui = MainWindow::new()?;
     // ADR 0002: hide() drops the window's keepalive; without this held
@@ -819,8 +930,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tray_ok = tray.is_some();
     {
         let hidden = Arc::clone(&hidden);
+        let flush_state = Arc::clone(&state);
         ui.window().on_close_requested(move || {
             if tray_ok {
+                // Flush the trailing debounced write before hiding: the
+                // process may stay hidden for days, or be killed outright.
+                flush_state.lock().unwrap().flush_save();
                 hidden.store(true, Ordering::SeqCst);
                 log::info!("hidden to tray");
             }
@@ -854,12 +969,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let menu_timer = Timer::default();
     {
         let show_window = show_window.clone();
+        let quit_state = Arc::clone(&state);
         menu_timer.start(TimerMode::Repeated, Duration::from_millis(250), move || {
             while let Ok(event) = muda::MenuEvent::receiver().try_recv() {
                 match event.id().0.as_str() {
                     "show" => show_window(),
                     "quit" => {
                         log::info!("quitting (tray menu)");
+                        quit_state.lock().unwrap().flush_save();
                         let _ = slint::quit_event_loop();
                     }
                     _ => {}
@@ -1057,8 +1174,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 apply_settings(&ui, &state);
                 state.changed();
             }
+            // The immediate save supersedes any pending debounce write.
+            state.debounce.borrow_mut().cancel();
         });
     }
+
+    // Debounced save-on-change: every settings mutation marks the window via
+    // state.changed(); this short tick drains it once 800 ms of quiet have
+    // passed (worst-case latency 800 ms + one tick). حفظ stays immediate.
+    // Main scope: dropping a Slint Timer stops it, so it must outlive ui.run().
+    let save_timer = Timer::default();
+    let save_state = Arc::clone(&state);
+    let save_handle = ui.as_weak();
+    save_timer.start(TimerMode::Repeated, Duration::from_millis(200), move || {
+        let Some(ui) = save_handle.upgrade() else {
+            return;
+        };
+        let mut state = save_state.lock().unwrap();
+        if state.debounce.borrow_mut().take_if_due(Instant::now()) {
+            state.save();
+            // Status feedback ONLY: a full apply_settings here could clobber
+            // a location_query typed during the debounce window (Sentinel).
+            ui.set_status_message(state.status.clone().into());
+        }
+    });
 
     // Once a second: the countdown text only. Recompute when it runs out.
     // The tray lives in this closure so its tooltip rides the same tick —
@@ -1126,6 +1265,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_set_quiet_enabled(move |on: bool| {
             let mut state = state.lock().unwrap();
             state.settings.notifications.quiet_hours_enabled = on;
+            if let Some(ui) = weak.upgrade() {
+                apply_settings(&ui, &state);
+                state.changed();
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_set_start_at_login(move |on: bool| {
+            let mut state = state.lock().unwrap();
+            state.settings.start_at_login = on;
+            // Apply the registration immediately; the flag itself persists
+            // through the debounced save-on-change like every other setting.
+            autostart::set(on);
             if let Some(ui) = weak.upgrade() {
                 apply_settings(&ui, &state);
                 state.changed();
@@ -1226,12 +1380,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|value| value.parse::<u64>().ok())
     {
         let timer = Timer::default();
+        let quit_state = Arc::clone(&state);
         timer.start(
             TimerMode::SingleShot,
             Duration::from_millis(ms),
             move || {
                 log::info!("debug: quitting event loop");
+                quit_state.lock().unwrap().flush_save();
                 let _ = slint::quit_event_loop();
+            },
+        );
+        debug_timers.push(timer);
+    }
+    if let Some(ms) = std::env::var("TAWADU_DEBUG_TOUCH_SETTING_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        let timer = Timer::default();
+        let touch_state = Arc::clone(&state);
+        timer.start(
+            TimerMode::SingleShot,
+            Duration::from_millis(ms),
+            move || {
+                // Mutate through the same path as a UI handler: marks the
+                // debounce window, no immediate save. Lets process tests
+                // exercise the trailing-write durability headlessly.
+                let mut state = touch_state.lock().unwrap();
+                // Contract with tray_lifecycle phase 5: default + 5 (= 15).
+                state.settings.pre_alert_minutes =
+                    tawadu_core::settings::Settings::default().pre_alert_minutes + 5;
+                state.changed();
+                log::info!("debug: touched setting (debounce pending)");
             },
         );
         debug_timers.push(timer);
@@ -1241,8 +1420,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // app level, not just propagate as main's Err.
     if let Err(error) = ui.run() {
         log::error!("event loop failed: {error}");
+        state.lock().unwrap().flush_save();
         return Err(error.into());
     }
+    // Catch-all exit flush (macOS Cmd+Q and any other loop exit): the
+    // trailing debounced write must survive an abrupt exit mid-debounce.
+    state.lock().unwrap().flush_save();
     Ok(())
 }
 
@@ -1359,5 +1542,58 @@ mod tests {
             announce(&event, &riyadh(), &quiet_settings(), event.at).is_some(),
             "the athan is essential and bypasses quiet hours"
         );
+    }
+
+    #[test]
+    fn debounce_is_not_due_before_the_delay() {
+        let mut d = SaveDebounce::new(Duration::from_millis(800));
+        let t0 = Instant::now();
+        d.touch(t0);
+        assert!(!d.take_if_due(t0 + Duration::from_millis(799)));
+    }
+
+    #[test]
+    fn debounce_is_due_after_the_delay_and_fires_once() {
+        let mut d = SaveDebounce::new(Duration::from_millis(800));
+        let t0 = Instant::now();
+        d.touch(t0);
+        assert!(d.take_if_due(t0 + Duration::from_millis(800)));
+        // Cleared: the next tick must not write again.
+        assert!(!d.take_if_due(t0 + Duration::from_millis(2000)));
+    }
+
+    #[test]
+    fn debounce_restarts_on_every_change() {
+        let mut d = SaveDebounce::new(Duration::from_millis(800));
+        let t0 = Instant::now();
+        d.touch(t0);
+        d.touch(t0 + Duration::from_millis(600));
+        // 800 ms after the FIRST touch, but only 200 after the last.
+        assert!(!d.take_if_due(t0 + Duration::from_millis(800)));
+        assert!(d.take_if_due(t0 + Duration::from_millis(1400)));
+    }
+
+    #[test]
+    fn debounce_cancel_supersedes_pending_save() {
+        let mut d = SaveDebounce::new(Duration::from_millis(800));
+        let t0 = Instant::now();
+        d.touch(t0);
+        d.cancel();
+        assert!(!d.take_if_due(t0 + Duration::from_millis(5000)));
+    }
+
+    #[test]
+    fn debounce_flush_forces_the_pending_write_once() {
+        let mut d = SaveDebounce::new(Duration::from_millis(800));
+        d.touch(Instant::now());
+        assert!(d.flush());
+        assert!(!d.flush());
+        assert!(!d.take_if_due(Instant::now() + Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn debounce_without_changes_never_fires() {
+        let mut d = SaveDebounce::new(Duration::from_millis(800));
+        assert!(!d.take_if_due(Instant::now() + Duration::from_secs(60)));
     }
 }

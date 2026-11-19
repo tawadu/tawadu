@@ -90,6 +90,14 @@ fn spawn_app_in(home: &std::path::Path, extra: &[(&str, &str)]) -> (AppGuard, Ar
     (AppGuard(child), drain(stderr))
 }
 
+/// The app's settings DB path inside an isolated config home, per OS.
+fn db_path(home: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    return home.join("Library/Application Support/tawadu/tawadu.db");
+    #[cfg(not(target_os = "macos"))]
+    return home.join("tawadu/tawadu.db");
+}
+
 /// Pre-seed the isolated settings DB (the app loads it at startup). The
 /// subdir must mirror `Storage::default_db_path` per OS: macOS nests under
 /// Library/Application Support, Windows (APPDATA) and Linux (XDG) do not.
@@ -240,6 +248,11 @@ fn tray_lifecycle() {
         "neither tray path ran; logs:\n{}",
         log.lock().unwrap()
     );
+    if path == Some(0) {
+        eprintln!("lifecycle phase 1: REAL tray path confirmed (hidden to tray)");
+    } else {
+        eprintln!("lifecycle phase 1: fallback path (tray unavailable -> KeepWindowShown)");
+    }
 
     // The close has fired; without the held KeepAlive the loop would have
     // quit when hide() dropped the window's last keepalive. Quit is 3.5 s
@@ -399,4 +412,113 @@ fn tray_lifecycle() {
         break;
     }
     assert!(phase3_done, "phase 3 did not complete");
+
+    // ---- phase 4: fired-event ledger — no re-announce on restart ----
+    // Fire the pre-alert, kill, restart with the SAME debug-clock anchor
+    // (the clock resets to the anchor per process, so the event is due
+    // again ~41 s in). The ledger must skip it; the athan — a different
+    // identity — must still fire, proving the engine stayed alive.
+    let home = fresh_config_home();
+    let mut settings = tawadu_core::settings::Settings::default();
+    settings.iqamah.fajr = 10;
+    write_settings(&home, &settings);
+    let ledger_env = [
+        ("TAWADU_DEBUG_NOW", "2026-11-19T01:00:00Z"),
+        ("TAWADU_DEBUG_TIME_SCALE", "60"),
+        ("TAWADU_DEBUG_MAX_SLICE_MS", "1000"),
+        ("TAWADU_DEBUG_BANNER_MS", "60000"),
+    ];
+    let (mut first, log) = spawn_app_in(&home, &ledger_env);
+    assert!(
+        wait_for_log(&log, "firing pre_alert", Duration::from_secs(90)),
+        "pre-alert must fire before the restart; logs:\n{}",
+        log.lock().unwrap()
+    );
+    let _ = first.kill();
+    let _ = first.wait();
+    let (mut second, log2) = spawn_app_in(&home, &ledger_env);
+    assert!(
+        wait_for_log(&log2, "skipping already-fired", Duration::from_secs(90)),
+        "the ledger must skip the re-detected pre-alert after restart; logs:\n{}",
+        log2.lock().unwrap()
+    );
+    assert!(
+        wait_for_log(&log2, "firing prayer", Duration::from_secs(90)),
+        "the athan (a different identity) must still fire after restart; logs:\n{}",
+        log2.lock().unwrap()
+    );
+    assert!(
+        !log2.lock().unwrap().contains("firing pre_alert"),
+        "the pre-alert was re-announced after restart; logs:\n{}",
+        log2.lock().unwrap()
+    );
+    let _ = second.kill();
+    let _ = second.wait();
+
+    // ---- phase 5: the trailing debounced write survives abrupt exit ----
+    // Touch a setting at 2.0 s (800 ms debounce pending), quit at 2.6 s —
+    // BEFORE the timer fires. The quit flush must persist the change.
+    // Residual window (Sentinel's adjusted bar, documented): a HARD kill
+    // (TerminateProcess) with the window still open — no quit, no hide —
+    // inside the <800 ms debounce can still lose the trailing write; no
+    // flush-on-exit design can catch it short of write-through. Every
+    // graceful path (quit, hide-to-tray, loop exit) flushes.
+    let home = fresh_config_home();
+    let (mut quitter, _log) = spawn_app_in(
+        &home,
+        &[
+            ("TAWADU_DEBUG_TOUCH_SETTING_MS", "2000"),
+            ("TAWADU_DEBUG_AUTOQUIT_MS", "2600"),
+        ],
+    );
+    assert!(
+        wait_exit(&mut quitter, Duration::from_secs(20)).is_some_and(|s| s.success()),
+        "app must exit cleanly via the quit hook"
+    );
+    let storage = tawadu_core::storage::Storage::open(&db_path(&home))
+        .expect("settings DB must exist after the quit flush");
+    match storage.load_settings() {
+        tawadu_core::storage::LoadOutcome::Loaded(s) => assert_eq!(
+            s.pre_alert_minutes, 15,
+            "the trailing debounced write must survive quit mid-debounce"
+        ),
+        _ => panic!("settings must be persisted by the quit flush"),
+    }
+
+    // Hide variant: close-to-tray at 2.6 s flushes too; then a HARD kill.
+    let home = fresh_config_home();
+    let (mut hider, log) = spawn_app_in(
+        &home,
+        &[
+            ("TAWADU_DEBUG_TOUCH_SETTING_MS", "2000"),
+            ("TAWADU_DEBUG_AUTOCLOSE_MS", "2600"),
+        ],
+    );
+    // Branch on tray availability: without an SNI watcher (CI xvfb) the
+    // app correctly keeps the window shown on close — there is no hide to
+    // flush, and the quit-flush durability above already covers that path.
+    let hide_or_fallback = wait_for_either(
+        &log,
+        "hidden to tray",
+        "tray unavailable",
+        Duration::from_secs(20),
+    );
+    if hide_or_fallback == Some(0) {
+        eprintln!("lifecycle phase 5: hide-flush verified on the REAL tray path");
+        let _ = hider.kill();
+        let _ = hider.wait();
+        let storage = tawadu_core::storage::Storage::open(&db_path(&home))
+            .expect("settings DB must exist after the hide flush");
+        match storage.load_settings() {
+            tawadu_core::storage::LoadOutcome::Loaded(s) => assert_eq!(
+                s.pre_alert_minutes, 15,
+                "the trailing debounced write must survive hide-then-kill"
+            ),
+            _ => panic!("settings must be persisted by the hide flush"),
+        }
+    } else {
+        assert_eq!(hide_or_fallback, Some(1), "neither tray path ran");
+        let _ = hider.kill();
+        let _ = hider.wait();
+    }
 }

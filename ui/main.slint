@@ -264,6 +264,7 @@ export component MainWindow inherits Window {
 
     // ---- notifications ----
     in property <bool> notif_pre_alert;
+    in property <bool> start_at_login;
     in property <bool> notif_athan;
     in property <bool> notif_iqamah;
     in property <bool> notif_athkar;
@@ -292,6 +293,7 @@ export component MainWindow inherits Window {
     callback set-iqamah(string, int);
     callback set-notif-kind(string, bool);
     callback set-quiet-enabled(bool);
+    callback set-start-at-login(bool);
     callback set-quiet-from(string);
     callback set-quiet-to(string);
     callback save-settings();
@@ -723,6 +725,11 @@ export component MainWindow inherits Window {
                             options: language_options;
                             selected: selected_language;
                             picked(value) => { set-language(value); }
+                        }
+                        Toggle {
+                            label: "Start at login";
+                            on: start_at_login;
+                            toggled(on) => { set-start-at-login(on); }
                         }
                     }
                 }

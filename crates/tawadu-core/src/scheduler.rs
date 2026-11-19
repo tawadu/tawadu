@@ -151,6 +151,16 @@ pub fn build(times: PrayerTimes, iqamah: &IqamahOffsets, pre_alert_minutes: u32)
     Timeline { times, events }
 }
 
+/// Filter due events down to those not yet announced, consulting the ledger
+/// by EXACT identity (kind + prayer + scheduled instant). A restart
+/// recomputes the same instant → dedupe holds; a schedule shifted by a
+/// method/location change is a NEW identity → never suppressed; a sleep jump
+/// across several due events misses nothing. Fail open: a ledger read error
+/// must report "not fired", never silence an alert.
+pub fn fireable(due: Vec<Event>, mut is_fired: impl FnMut(&Event) -> bool) -> Vec<Event> {
+    due.into_iter().filter(|event| !is_fired(event)).collect()
+}
+
 impl Timeline {
     /// The first event strictly after `now`.
     pub fn next_after(&self, now: DateTime<Utc>) -> Option<&Event> {
@@ -324,5 +334,65 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    fn fajr_events() -> Vec<Event> {
+        let at = |s: &str| DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc);
+        vec![
+            Event {
+                kind: EventKind::PreAlert,
+                label: "Fajr",
+                at: at("2026-11-19T01:41:00Z"),
+            },
+            Event {
+                kind: EventKind::Prayer,
+                label: "Fajr",
+                at: at("2026-11-19T01:51:00Z"),
+            },
+            Event {
+                kind: EventKind::Iqamah,
+                label: "Fajr",
+                at: at("2026-11-19T02:01:00Z"),
+            },
+        ]
+    }
+
+    #[test]
+    fn fireable_skips_only_the_already_fired_identity() {
+        let events = fajr_events();
+        let pre = events[0].at;
+        // Restart boundary: the ledger holds this EXACT instant -> skip.
+        let kept = fireable(events, |e| e.kind == EventKind::PreAlert && e.at == pre);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0].kind, EventKind::Prayer);
+        assert_eq!(kept[1].kind, EventKind::Iqamah);
+    }
+
+    #[test]
+    fn fireable_sleep_jump_misses_nothing_due() {
+        // A sleep jump makes several events due at once; only the identities
+        // already announced are filtered — every other due event survives.
+        let events = fajr_events();
+        let pre = events[0].at;
+        let prayer = events[1].at;
+        let kept = fireable(events, |e| {
+            (e.kind == EventKind::PreAlert && e.at == pre)
+                || (e.kind == EventKind::Prayer && e.at == prayer)
+        });
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].kind, EventKind::Iqamah);
+        // Nothing recorded: everything due stays due.
+        let all = fireable(fajr_events(), |_| false);
+        assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn fireable_schedule_shift_keeps_the_shifted_event() {
+        // Same kind+prayer, EARLIER recomputed instant: a new identity.
+        let mut events = fajr_events();
+        let stored = events[0].at;
+        events[0].at = stored - Duration::minutes(2);
+        let kept = fireable(events, |e| e.kind == EventKind::PreAlert && e.at == stored);
+        assert_eq!(kept.len(), 3, "the shifted pre-alert must still fire");
     }
 }
