@@ -168,7 +168,9 @@ fires the athan and iqamah while correctly dropping the stale pre-alert.
 
 - **Scheduler thread**: sleeps in ≤60 s slices, recomputes every slice (correct across
   clock change, wake, and settings edits), sweeps `(watermark, now]` after each wake,
-  drops events older than 120 s.
+  drops events older than 120 s. **Product rule (Sentinel confirmed, Atlas ratified):
+  events >120 s late are intentionally NEVER announced — a 20-min-late athan is worse
+  than silence; the home screen still shows the correct next prayer.**
 - **OS notifications** via `notify-rust` **plus an always-shown in-app banner** — the
   banner is the correctness floor, because `notify-rust` returning `Ok` is not proof a
   toast appeared (an unpackaged Windows exe needs an AUMID).

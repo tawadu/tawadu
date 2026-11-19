@@ -1406,7 +1406,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // debounce window, no immediate save. Lets process tests
                 // exercise the trailing-write durability headlessly.
                 let mut state = touch_state.lock().unwrap();
-                state.settings.pre_alert_minutes = 15;
+                // Contract with tray_lifecycle phase 5: default + 5 (= 15).
+                state.settings.pre_alert_minutes =
+                    tawadu_core::settings::Settings::default().pre_alert_minutes + 5;
                 state.changed();
                 log::info!("debug: touched setting (debounce pending)");
             },

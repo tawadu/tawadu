@@ -55,6 +55,9 @@ Auckland) steps back, and one that belongs to the next day steps forward.
 4. Audio and IO never block the UI thread.
 5. Everything fails soft: no audio device → notification only; no city database →
    manual entry; no network → fully functional.
+6. **Never announce stale prayers**: events more than 120 s late are intentionally
+   dropped, never announced (Sentinel confirmed, Atlas ratified). A 20-min-late
+   athan is worse than silence; the home screen still shows the correct next prayer.
 
 ## Platform integration
 
