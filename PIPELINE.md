@@ -56,6 +56,13 @@
 **Starter pack decision (Atlas, v1):** CC0 only — **A1** `Beautiful_adhan.ogg` (2:34, full athan, default for all prayers) + **A2** `Adhan.ogg` (0:42, short announcement/pre-alert option). A3/A4 (CC BY-SA) stay documented candidates for later packs; the importer must honour share-alike in the manifest. **No Fajr-specific labelling in v1** — no Tier A file is acoustically verified for the Fajr addition; honest generic-athan label until a listening check. Fajr-specific voice = follow-up: Sentinel PDM verdict + unanimous panel on Tier B (B1 Doha / B2 Mishary), never bundled before that.
 **Phase 4 decision:** MIT corpus TEXT first (pinned d793023e), recitation audio only after a separate performance-rights check; OpenDua CC BY 4.0 fallback.
 
+**Sentinel licence audit (2026-11-19) — binding conditions:**
+- Ledger structurally COMPLETE. **A1/A3/A4 hashes must be re-verified against fresh LIVE bytes before any asset commit** (Wayback size-match ≠ content-match); the asset PR must carry the download provenance (script or CI artifact). A2 already live-verified. **UPDATE: Atlas live-verified A1+A2 on 2026-11-19 (API-derived URLs, exact SHA-256 match) — v1 condition satisfied; reproducible script at scripts/verify_audio_sources.py. A3/A4 still pending (not v1).**
+- Phase 4: state the commit-pin integrity anchor explicitly or add per-file SHA-256 for the MIT JSONs; OpenDua needs a hash or archived page before use.
+- A4 attribution identity (Atcovi vs Aaqib Azeez) must be settled before packaging (A4 not in v1).
+- **PDM ruling: REJECT** — Tier B is not sufficient for bundling (assertion ≠ grant; B2 performance rights unaddressed). Future Fajr pack: genuine CC0/CC-BY recording or in-house recording (also solves the Fajr-phrase verification). Panel rule applies only if revisited.
+- Sabah Fakhry rejection confirmed.
+
 ## Open debt / follow-ups
 
 - **Tray pixel check** (cosmetic): icon registration + full functional path verified; literal taskbar screenshot pending (taskbar auto-hidden during test; do it when naturally visible).

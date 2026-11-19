@@ -185,6 +185,12 @@ Exact licence text (verbatim, root `LICENSE`):
    1,448,294 B). B1/B2 were hashed from direct archive.org downloads whose
    sizes match their metadata API. Sentinel can re-verify against fresh bytes.
    No audio was written into the repository. [1][3][4][14][15]
+6. **Atlas live re-verification (2026-11-19):** A1 and A2 were re-downloaded
+   from live Commons-API-derived (`imageinfo`) URLs and SHA-256 **matched the
+   ledger exactly** (sizes matched too). Sentinel's live-bytes condition is
+   satisfied for the v1 starter assets. A3/A4 remain Wayback-derived pending
+   the same check (not in v1). Reproducible script: `scripts/verify_audio_sources.py`
+   — run it in the asset PR and paste the output as provenance.
 
 ---
 
