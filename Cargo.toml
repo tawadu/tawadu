@@ -27,6 +27,7 @@ symphonia = { version = "0.5", features = ["all"] }
 hound = "3"
 rubato = "0.15"
 sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 # --- async ---
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync", "fs"] }
 # --- ui ---

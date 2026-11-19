@@ -40,8 +40,10 @@ pub struct Storage {
 }
 
 impl Storage {
-    /// The platform's default database path (`…/tawadu/tawadu.db`).
-    pub fn default_db_path() -> Option<PathBuf> {
+    /// The platform's default data directory (`…/tawadu/`), created if
+    /// missing. Settings DB, voice-pack library and audio render cache all
+    /// live under it.
+    pub fn default_data_dir() -> Option<PathBuf> {
         #[cfg(target_os = "windows")]
         let base = PathBuf::from(std::env::var_os("APPDATA")?);
         #[cfg(target_os = "macos")]
@@ -54,7 +56,12 @@ impl Storage {
 
         let dir = base.join("tawadu");
         std::fs::create_dir_all(&dir).ok()?;
-        Some(dir.join("tawadu.db"))
+        Some(dir)
+    }
+
+    /// The platform's default database path (`…/tawadu/tawadu.db`).
+    pub fn default_db_path() -> Option<PathBuf> {
+        Self::default_data_dir().map(|dir| dir.join("tawadu.db"))
     }
 
     /// Open the default database, or `None` if it cannot be created.

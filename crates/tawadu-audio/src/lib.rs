@@ -15,9 +15,17 @@
 //!
 //! Offline-first: nothing in this crate opens a network connection.
 
+pub mod bundled;
 pub mod chime;
 pub mod edit;
 pub mod error;
+pub mod import;
+pub mod library;
 pub mod manifest;
+pub mod probe;
+pub mod render;
 pub mod routing;
 pub mod sequence;
+
+#[cfg(test)]
+pub mod testutil;
