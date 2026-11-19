@@ -3,11 +3,15 @@
 
 Owns the well-known name and accepts SNI registrations — no rendering. That
 is all the app's zbus NameHasOwner probe and the ksni backend need to take
-the REAL tray path under xvfb. python3-dbus is in Ubuntu's repos; no glib
-main loop needed: Connection.read_write_dispatch pumps method calls.
+the REAL tray path under xvfb. python3-dbus + python3-gi are in Ubuntu's
+repos. dbus-python REQUIRES a main loop attached before exporting objects
+(RuntimeError otherwise — run 44444569651); DBusGMainLoop + GLib.MainLoop
+is the standard, deterministic pairing.
 """
 import dbus
 import dbus.service
+from dbus.mainloop.glib import DBusGMainLoop
+from gi.repository import GLib
 
 NAME = "org.kde.StatusNotifierWatcher"
 PATH = "/StatusNotifierWatcher"
@@ -52,8 +56,8 @@ class Watcher(dbus.service.Object):
 
 
 if __name__ == "__main__":
+    DBusGMainLoop(set_as_default=True)
     bus = dbus.SessionBus()
     Watcher(bus)
     print("sni_watcher: owning", NAME, flush=True)
-    while True:
-        bus.read_write_dispatch(500)
+    GLib.MainLoop().run()

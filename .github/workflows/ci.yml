@@ -56,8 +56,14 @@ jobs:
         # 44440795375). dbus-run-session gives a deterministic private bus.
         # --nocapture surfaces the test's tray-path confirmation in the log.
         run: |
-          sudo apt-get install -y -qq python3-dbus dbus
-          dbus-run-session -- xvfb-run -a bash -c 'python3 scripts/ci/sni_watcher.py & sleep 2; cargo test --workspace -- --nocapture'
+          sudo apt-get install -y -qq python3-dbus python3-gi dbus
+          dbus-run-session -- xvfb-run -a bash -c '
+            python3 scripts/ci/sni_watcher.py &
+            WPID=$!
+            sleep 2
+            kill -0 "$WPID" 2>/dev/null || { echo "sni_watcher died at startup"; exit 1; }
+            cargo test --workspace -- --nocapture
+          '
 
       - name: Test
         if: matrix.os != 'ubuntu-latest'
