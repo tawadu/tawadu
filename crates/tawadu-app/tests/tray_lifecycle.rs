@@ -248,6 +248,11 @@ fn tray_lifecycle() {
         "neither tray path ran; logs:\n{}",
         log.lock().unwrap()
     );
+    if path == Some(0) {
+        eprintln!("lifecycle phase 1: REAL tray path confirmed (hidden to tray)");
+    } else {
+        eprintln!("lifecycle phase 1: fallback path (tray unavailable -> KeepWindowShown)");
+    }
 
     // The close has fired; without the held KeepAlive the loop would have
     // quit when hide() dropped the window's last keepalive. Quit is 3.5 s
@@ -499,6 +504,7 @@ fn tray_lifecycle() {
         Duration::from_secs(20),
     );
     if hide_or_fallback == Some(0) {
+        eprintln!("lifecycle phase 5: hide-flush verified on the REAL tray path");
         let _ = hider.kill();
         let _ = hider.wait();
         let storage = tawadu_core::storage::Storage::open(&db_path(&home))

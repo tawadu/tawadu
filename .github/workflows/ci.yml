@@ -43,18 +43,21 @@ jobs:
         run: cargo check --workspace --all-targets
 
       # The tray lifecycle regression test launches the real GUI binary, so
-      # Linux needs a display. Under xvfb there is no SNI watcher, which
-      # exercises the KeepWindowShown fallback path (ADR 0002 condition 4);
-      # the hide-to-tray path is exercised on Windows/macOS runners.
-      - name: Test (Linux, virtual display)
+      # Linux needs a display; the stub SNI watcher below gives it the SAME
+      # real hide-to-tray coverage as Windows/macOS. The suite still branches
+      # on tray availability, so a watcher failure degrades to an honest
+      # KeepWindowShown fallback test instead of a spurious red.
+      - name: Test (Linux, virtual display + stub SNI watcher)
         if: matrix.os == 'ubuntu-latest'
-        # snixembed (real SNI host, Atlas option a) is NOT in ubuntu-24.04
-        # repos ("Unable to locate package", run 44440795375) — using the
-        # sanctioned option (b): the suite branches on tray availability and
-        # verifies the KeepWindowShown fallback here. Future: a stub
-        # StatusNotifierWatcher in the test harness (zbus is already a dep)
-        # would give Linux the real hide path without external packages.
-        run: xvfb-run -a cargo test --workspace
+        # Real hide-path coverage without external tray packages: a minimal
+        # python3-dbus StatusNotifierWatcher (scripts/ci/sni_watcher.py) owns
+        # the well-known name and accepts registrations — all the zbus probe
+        # and ksni need. snixembed is Debian-only (absent on noble, run
+        # 44440795375). dbus-run-session gives a deterministic private bus.
+        # --nocapture surfaces the test's tray-path confirmation in the log.
+        run: |
+          sudo apt-get install -y -qq python3-dbus dbus
+          dbus-run-session -- xvfb-run -a bash -c 'python3 scripts/ci/sni_watcher.py & sleep 2; cargo test --workspace -- --nocapture'
 
       - name: Test
         if: matrix.os != 'ubuntu-latest'
