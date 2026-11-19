@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="plaster" data-state="default">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tawadu — Audio settings sketch (Phase 3 proposal)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Sans+Arabic:wght@300;400;500;600;700&family=Amiri:wght@400;700&display=swap" rel="stylesheet">
+<style>
+/* ---- Brand tokens (design/brand.md — source of truth) ---- */
+:root, [data-theme="plaster"] {
+  --bg:#F6F1E8; --surface:#FFFDF8; --surface-2:#EFE8DB;
+  --ink:#211C15; --ink-muted:#6E665A; --border:#E2D9C9;
+  --accent:#2E5C4E; --accent-soft:#E3EEE9; --accent-ink:#FFFFFF;
+  --gold:#B08A4A;
+  --shadow:0 1px 2px rgba(33,28,21,.05),0 4px 14px rgba(33,28,21,.05);
+}
+[data-theme="ink"] {
+  --bg:#14110D; --surface:#1D1915; --surface-2:#27221C;
+  --ink:#EFE7DA; --ink-muted:#B0A697; --border:#332C24;
+  --accent:#8FC3AE; --accent-soft:#24352E; --accent-ink:#0F1A15;
+  --gold:#D0A45C;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 4px 14px rgba(0,0,0,.25);
+}
+[data-theme="ramadan"] {
+  --bg:#171209; --surface:#221A10; --surface-2:#2C2214;
+  --ink:#F3E7D3; --ink-muted:#C2B399; --border:#3A2E1C;
+  --accent:#D9A441; --accent-soft:#33270F; --accent-ink:#1A1206;
+  --gold:#D9A441; /* Ramadan has no separate gold token — accent IS gold */
+  --shadow:0 1px 2px rgba(0,0,0,.35),0 4px 14px rgba(0,0,0,.3);
+}
+* { box-sizing:border-box; margin:0; padding:0; }
+body {
+  background:var(--bg); color:var(--ink);
+  font-family:"IBM Plex Sans","IBM Plex Sans Arabic",sans-serif;
+  font-size:15px; padding:24px; transition:background .26s cubic-bezier(.22,.61,.36,1),color .26s;
+}
+[lang="ar"] { font-family:"IBM Plex Sans Arabic","IBM Plex Sans",sans-serif; }
+.num { font-variant-numeric:tabular-nums; }
+.wrap { width:932px; max-width:100%; }
+
+/* ---- sketch chrome (not part of the app UI) ---- */
+.chrome { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:16px;
+  padding:10px 14px; border:1px dashed var(--border); border-radius:10px; }
+.chrome .tag { font-size:11px; letter-spacing:1px; color:var(--ink-muted); font-weight:600; }
+.chrome .note { font-size:12px; color:var(--ink-muted); flex:1 1 260px; }
+.seg { display:flex; gap:4px; }
+.seg button { font:500 12px "IBM Plex Sans"; padding:5px 12px; border-radius:999px;
+  border:1px solid var(--border); background:var(--surface); color:var(--ink); cursor:pointer; }
+.seg button[aria-pressed="true"] { background:var(--accent-soft); border-color:var(--accent); color:var(--accent); }
+
+/* ---- section eyebrow ---- */
+.band-head { display:flex; align-items:baseline; gap:8px; margin:4px 0 10px; }
+.eyebrow { font-size:11px; font-weight:600; letter-spacing:1px; color:var(--ink-muted); }
+.eyebrow-ar { font-size:12px; font-weight:500; color:var(--ink-muted); }
+.band-hint { font-size:12px; color:var(--ink-muted); margin-left:auto; }
+
+/* ---- cards ---- */
+.card { background:var(--surface); border:1px solid var(--border); border-radius:16px;
+  box-shadow:var(--shadow); padding:12px; }
+.card + .card, .cols + .card { margin-top:14px; }
+.card-title { font-size:11px; font-weight:600; letter-spacing:1px; color:var(--ink-muted); margin-bottom:8px; }
+
+/* ---- pack strip ---- */
+.strip { display:flex; gap:12px; overflow-x:auto; padding-bottom:4px; }
+.pack { flex:0 0 212px; border:1px solid var(--border); border-radius:12px;
+  background:var(--surface); padding:12px; display:flex; flex-direction:column; gap:6px; }
+.pack.selected { border-color:var(--accent); background:var(--accent-soft); }
+.pack .name { font-size:15px; font-weight:600; }
+.pack .name-ar { font-size:13px; color:var(--ink-muted); }
+.pack .reciter { font-size:12.5px; color:var(--ink-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.meta { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+.badge { font-size:11px; font-weight:600; padding:2px 8px; border-radius:999px;
+  border:1px solid var(--border); background:var(--surface-2); color:var(--ink-muted); cursor:pointer; }
+.badge.bundled { cursor:default; }
+.dur { font-size:12px; color:var(--ink-muted); }
+.pack-actions { display:flex; gap:6px; margin-top:2px; align-items:center; }
+.btn { display:inline-flex; align-items:center; gap:6px; font:600 13px "IBM Plex Sans","IBM Plex Sans Arabic";
+  height:30px; padding:0 12px; border-radius:10px; border:1px solid var(--border);
+  background:var(--surface); color:var(--ink); cursor:pointer; }
+.btn.soft { background:var(--accent-soft); border-color:var(--accent); color:var(--accent); }
+.btn.primary { background:var(--accent); border-color:var(--accent); color:var(--accent-ink); }
+.btn.icon { width:30px; padding:0; justify-content:center; color:var(--ink-muted); }
+.btn svg { width:14px; height:14px; stroke:currentColor; fill:none; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
+.confirm { display:none; align-items:center; gap:6px; font-size:12px; color:var(--ink-muted); }
+.pack.confirming .confirm { display:flex; }
+.pack.confirming .pack-actions { display:none; }
+.import-card { flex:0 0 212px; border:1px dashed var(--border); border-radius:12px; padding:12px;
+  display:flex; flex-direction:column; align-items:flex-start; justify-content:center; gap:6px;
+  color:var(--ink-muted); cursor:pointer; background:transparent; }
+.import-card:hover { border-color:var(--accent); color:var(--accent); }
+.import-card .t { font-size:14px; font-weight:600; display:flex; gap:6px; align-items:center; }
+.import-card .c { font-size:12px; }
+.import-card svg { width:16px; height:16px; stroke:currentColor; fill:none; stroke-width:1.5; stroke-linecap:round; }
+
+/* status strips (error / notice) — calm, never red */
+.status { display:none; margin-top:10px; padding:8px 12px; border-radius:10px;
+  background:var(--surface-2); border:1px solid var(--border); font-size:12.5px; color:var(--ink); }
+.status .x { float:right; cursor:pointer; color:var(--ink-muted); font-weight:600; }
+[data-state="error"] #import-error { display:block; }
+[data-state="empty"] #pack-strip { display:none; }
+[data-state="empty"] #empty-state { display:flex; }
+#empty-state { display:none; align-items:center; gap:14px; padding:18px 12px; }
+#empty-state .mark { width:34px; height:34px; stroke:var(--accent); fill:none; stroke-width:4.5; stroke-linecap:round; }
+#empty-state .txt { flex:1; }
+#empty-state .txt b { font-size:15px; }
+#empty-state .txt div { font-size:12.5px; color:var(--ink-muted); }
+
+/* ---- two columns ---- */
+.cols { display:flex; gap:20px; margin-top:14px; align-items:flex-start; }
+.col-left { flex:0 0 460px; } .col-right { flex:1; }
+
+/* event rows */
+.event { border:1px solid var(--border); border-radius:10px; background:var(--surface); margin-bottom:8px; }
+.event-head { display:flex; align-items:center; gap:8px; padding:8px 10px; }
+.ev-label { display:flex; flex-direction:column; width:86px; }
+.ev-label .en { font-size:13.5px; font-weight:600; }
+.ev-label .ar { font-size:12px; color:var(--ink-muted); }
+.gold-dot { width:6px; height:6px; border-radius:3px; background:var(--gold); flex:0 0 6px; }
+/* keep the control column aligned: non-athkar rows reserve the same 6px slot */
+.event:not(.athkar) .event-head::before { content:""; width:6px; flex:0 0 6px; }
+.event.athkar .ev-label .ar { color:var(--gold); }
+.voice-pill { flex:1; display:flex; align-items:center; justify-content:space-between; gap:8px;
+  height:30px; padding:0 10px; border-radius:10px; border:1px solid var(--border);
+  background:var(--surface-2); font-size:12.5px; cursor:pointer; color:var(--ink);
+  white-space:nowrap; overflow:hidden; }
+.voice-pill .caret { color:var(--ink-muted); font-size:10px; }
+.event.open .voice-pill { border-color:var(--accent); background:var(--accent-soft); color:var(--accent); }
+.mode-chip { flex:0 0 auto; height:30px; padding:0 10px; display:inline-flex; align-items:center; gap:5px;
+  border-radius:999px; border:1px solid var(--border); background:var(--surface);
+  font:500 11.5px "IBM Plex Sans"; color:var(--ink-muted); cursor:pointer; }
+.mode-chip svg { width:12px; height:12px; stroke:currentColor; fill:none; stroke-width:1.5; stroke-linecap:round; stroke-linejoin:round; }
+.voice-list { display:none; border-top:1px solid var(--border); padding:8px 10px; }
+.event.open .voice-list { display:block; }
+.vl-group { font-size:10.5px; letter-spacing:.8px; font-weight:600; color:var(--ink-muted); margin:6px 0 4px; }
+.vl-opt { display:flex; align-items:center; gap:8px; padding:5px 8px; border-radius:8px;
+  font-size:12.5px; cursor:pointer; background:var(--surface-2); margin-bottom:3px; }
+.vl-opt.active { background:var(--accent-soft); color:var(--accent); font-weight:600; }
+.vl-opt .ar { color:var(--ink-muted); font-size:12px; margin-left:auto; }
+.vl-opt.active .ar { color:var(--accent); }
+.vl-reset { font-size:11.5px; color:var(--ink-muted); margin-top:4px; cursor:pointer; text-decoration:underline dotted; }
+
+/* playback */
+.ctl-row { display:flex; align-items:center; gap:10px; padding:7px 2px; }
+.ctl-label { width:118px; font-size:13px; display:flex; flex-direction:column; }
+.ctl-label .ar { font-size:11.5px; color:var(--ink-muted); }
+input[type="range"] { flex:1; appearance:none; height:4px; border-radius:2px; background:var(--surface-2); outline:none; }
+input[type="range"]::-webkit-slider-thumb { appearance:none; width:16px; height:16px; border-radius:8px;
+  background:var(--surface); border:1px solid var(--accent); box-shadow:var(--shadow); cursor:pointer; }
+.vol-val { width:44px; text-align:right; font-size:13px; font-weight:600; }
+.stepper { display:flex; align-items:center; gap:8px; }
+.stepper button { width:28px; height:28px; border-radius:10px; border:1px solid var(--border);
+  background:var(--surface); color:var(--ink); font-size:16px; cursor:pointer; }
+.stepper .val { width:64px; text-align:center; font-size:15px; font-weight:600; }
+.caption { font-size:12px; color:var(--ink-muted); padding:2px 2px 4px; }
+.hr { border-top:1px solid var(--border); margin:8px 0; }
+
+/* save row (context) */
+.save-row { display:flex; gap:10px; margin-top:14px; }
+.footnote { margin-top:14px; font-size:11.5px; color:var(--ink-muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- sketch chrome: theme + state toggles (design artifact only) -->
+  <div class="chrome">
+    <span class="tag">SKETCH</span>
+    <div class="seg" id="theme-seg">
+      <button data-t="plaster" aria-pressed="true">Plaster</button>
+      <button data-t="ink" aria-pressed="false">Ink</button>
+      <button data-t="ramadan" aria-pressed="false">Ramadan</button>
+    </div>
+    <div class="seg" id="state-seg">
+      <button data-s="default" aria-pressed="true">Default</button>
+      <button data-s="empty" aria-pressed="false">Empty</button>
+      <button data-s="error" aria-pressed="false">Import error</button>
+    </div>
+    <span class="note">Provisional copy — Quill's string table is the source of truth. Pack names, reciters and durations are <b>example placeholders</b>, not real assets.</span>
+  </div>
+
+  <!-- AUDIO band -->
+  <div class="band-head">
+    <span class="eyebrow">AUDIO</span>
+    <span class="eyebrow-ar" lang="ar" dir="rtl">الصوت</span>
+    <span class="band-hint">Voices for each event · packs stay on this device</span>
+  </div>
+
+  <!-- Card 1: voice packs -->
+  <div class="card">
+    <div class="card-title">VOICE PACKS</div>
+
+    <div class="strip" id="pack-strip">
+      <div class="pack selected" data-pack="p1">
+        <div class="name">My Pack <span class="badge bundled">Bundled</span></div>
+        <div class="name-ar" lang="ar" dir="rtl">حزمتي</div>
+        <div class="reciter">Reciter name — example</div>
+        <div class="meta"><span class="badge" title="View attribution">CC0-1.0</span><span class="dur num">3:42</span></div>
+        <div class="pack-actions">
+          <button class="btn soft preview"><svg viewBox="0 0 24 24"><path d="M7 5l12 7-12 7z"/></svg>Preview</button>
+        </div>
+      </div>
+
+      <div class="pack" data-pack="p2">
+        <div class="name">Makkah Athan</div>
+        <div class="name-ar" lang="ar" dir="rtl">أذان مكة</div>
+        <div class="reciter">Reciter name — example</div>
+        <div class="meta"><span class="badge" title="View attribution">CC-BY-4.0</span><span class="dur num">4:10</span></div>
+        <div class="pack-actions">
+          <button class="btn soft preview"><svg viewBox="0 0 24 24"><path d="M7 5l12 7-12 7z"/></svg>Preview</button>
+          <button class="btn icon remove" title="Remove pack"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5h6v2m-8 0l1 13h8l1-13"/></svg></button>
+        </div>
+        <div class="confirm">Remove? <button class="btn soft yes">✓</button><button class="btn no">✕</button></div>
+      </div>
+
+      <div class="pack" data-pack="p3">
+        <div class="name">Quiet Chimes</div>
+        <div class="reciter">Built-in sounds — example</div>
+        <div class="meta"><span class="badge" title="View attribution">proprietary</span><span class="dur num">0:12</span></div>
+        <div class="pack-actions">
+          <button class="btn soft preview"><svg viewBox="0 0 24 24"><path d="M7 5l12 7-12 7z"/></svg>Preview</button>
+          <button class="btn icon remove" title="Remove pack"><svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5h6v2m-8 0l1 13h8l1-13"/></svg></button>
+        </div>
+        <div class="confirm">Remove? <button class="btn soft yes">✓</button><button class="btn no">✕</button></div>
+      </div>
+
+      <div class="import-card" id="import-btn">
+        <span class="t"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>Import pack</span>
+        <span class="c">.tawadupack or folder · licence required</span>
+      </div>
+    </div>
+
+    <!-- designed empty state -->
+    <div id="empty-state">
+      <svg class="mark" viewBox="0 0 64 64"><path d="M16 52 V30 a16 16 0 0 1 32 0 V52"/><circle cx="32" cy="45" r="4.6" fill="currentColor" stroke="none" style="fill:var(--accent)"/></svg>
+      <div class="txt"><b>No voice packs yet</b><div>Import a pack to give every event its voice. Everything stays offline.</div></div>
+      <button class="btn primary">Import pack</button>
+    </div>
+
+    <!-- designed import-error state -->
+    <div class="status" id="import-error"><span class="x">✕</span>Pack rejected — missing licence for <span class="num">athan/fajr.mp3</span>. Every file needs a licence entry.</div>
+    <div class="status" id="fallback-note"><span class="x">✕</span>“Makkah Athan” removed — Athan now uses the bundled voice.</div>
+  </div>
+
+  <!-- Cards 2 + 3 -->
+  <div class="cols">
+    <div class="col-left card">
+      <div class="card-title">EVENT VOICES</div>
+
+      <div class="event athan open" data-ev="athan">
+        <div class="event-head">
+          <div class="ev-label"><span class="en">Athan</span><span class="ar" lang="ar" dir="rtl">أذان</span></div>
+          <div class="voice-pill"><span class="pill-text">My Pack · fajr</span><span class="caret">▾</span></div>
+          <button class="mode-chip" data-mode="sequential" title="Playback order"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></svg><span>Sequential</span></button>
+        </div>
+        <div class="voice-list">
+          <div class="vl-group">MY PACK</div>
+          <div class="vl-opt active" data-voice="My Pack · fajr">fajr <span class="ar" lang="ar" dir="rtl">الفجر</span></div>
+          <div class="vl-opt" data-voice="My Pack · dhuhr">dhuhr <span class="ar" lang="ar" dir="rtl">الظهر</span></div>
+          <div class="vl-group">MAKKAH ATHAN</div>
+          <div class="vl-opt" data-voice="Makkah Athan · full">full athan <span class="ar" lang="ar" dir="rtl">أذان كامل</span></div>
+          <div class="vl-opt" data-voice="Makkah Athan · short">short athan <span class="ar" lang="ar" dir="rtl">أذان مختصر</span></div>
+          <div class="vl-reset">Reset to pack default</div>
+        </div>
+      </div>
+
+      <div class="event" data-ev="iqamah">
+        <div class="event-head">
+          <div class="ev-label"><span class="en">Iqamah</span><span class="ar" lang="ar" dir="rtl">إقامة</span></div>
+          <div class="voice-pill"><span class="pill-text">My Pack · iqamah</span><span class="caret">▾</span></div>
+          <button class="mode-chip" data-mode="sequential"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></svg><span>Sequential</span></button>
+        </div>
+        <div class="voice-list">
+          <div class="vl-group">MY PACK</div>
+          <div class="vl-opt active" data-voice="My Pack · iqamah">iqamah <span class="ar" lang="ar" dir="rtl">إقامة</span></div>
+        </div>
+      </div>
+
+      <div class="event athkar" data-ev="athkar">
+        <div class="event-head">
+          <span class="gold-dot" title="Athkar — gold is reserved for the sacred"></span>
+          <div class="ev-label"><span class="en">Athkar</span><span class="ar" lang="ar" dir="rtl">أذكار</span></div>
+          <div class="voice-pill"><span class="pill-text">My Pack · morning_01</span><span class="caret">▾</span></div>
+          <button class="mode-chip" data-mode="shuffle"><svg viewBox="0 0 24 24"><path d="M4 7h4l8 10h4m0 0l-3-3m3 3l-3 3M4 17h4l2.5-3M13.5 10L16 7h4m0 0l-3-3m3 3l-3 3"/></svg><span>Shuffle</span></button>
+        </div>
+        <div class="voice-list">
+          <div class="vl-group">MY PACK</div>
+          <div class="vl-opt active" data-voice="My Pack · morning_01">morning_01 <span class="ar" lang="ar" dir="rtl">أذكار الصباح</span></div>
+          <div class="vl-opt" data-voice="My Pack · evening_01">evening_01 <span class="ar" lang="ar" dir="rtl">أذكار المساء</span></div>
+        </div>
+      </div>
+
+      <div class="event" data-ev="chime">
+        <div class="event-head">
+          <div class="ev-label"><span class="en">Chime</span><span class="ar" lang="ar" dir="rtl">تنبيه</span></div>
+          <div class="voice-pill"><span class="pill-text">Built-in · soft chime</span><span class="caret">▾</span></div>
+          <button class="mode-chip" data-mode="sequential"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10"/></svg><span>Sequential</span></button>
+        </div>
+        <div class="voice-list">
+          <div class="vl-group">BUILT-IN</div>
+          <div class="vl-opt active" data-voice="Built-in · soft chime">soft chime <span class="ar" lang="ar" dir="rtl">نغمة هادئة</span></div>
+          <div class="vl-opt" data-voice="Built-in · bell">bell <span class="ar" lang="ar" dir="rtl">جرس</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-right card">
+      <div class="card-title">PLAYBACK</div>
+      <div class="ctl-row">
+        <div class="ctl-label"><span>Volume</span><span class="ar" lang="ar" dir="rtl">مستوى الصوت</span></div>
+        <input type="range" id="vol" min="0" max="100" value="80">
+        <span class="vol-val num" id="vol-val">80 %</span>
+      </div>
+      <div class="hr"></div>
+      <div class="ctl-row">
+        <div class="ctl-label"><span>Stop athan after</span><span class="ar" lang="ar" dir="rtl">إيقاف الأذان بعد</span></div>
+        <div class="stepper">
+          <button id="trim-minus">−</button>
+          <span class="val num" id="trim-val">30 s</span>
+          <button id="trim-plus">+</button>
+        </div>
+      </div>
+      <div class="caption"><span class="num">0</span> = full recording · fades out over <span class="num">0.4 s</span> — never a hard cut</div>
+      <div class="caption">Preview plays with these edits applied, so you hear exactly what the event will sound like.</div>
+    </div>
+  </div>
+
+  <!-- save row context (unchanged, stays last) -->
+  <div class="save-row">
+    <button class="btn primary" lang="ar" dir="rtl">حفظ</button>
+    <button class="btn" lang="ar" dir="rtl">إغلاق</button>
+  </div>
+
+  <div class="footnote">Sketch for docs/audio-ui-proposal.md · gold appears only on the Athkar row · Arabic runs are separate RTL spans · all three themes use brand.md tokens.</div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
+// theme + state toggles
+$('#theme-seg').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  document.documentElement.dataset.theme = b.dataset.t;
+  $$('#theme-seg button').forEach(x => x.setAttribute('aria-pressed', x === b));
+});
+$('#state-seg').addEventListener('click', e => {
+  const b = e.target.closest('button'); if (!b) return;
+  document.documentElement.dataset.state = b.dataset.s;
+  $$('#state-seg button').forEach(x => x.setAttribute('aria-pressed', x === b));
+});
+// pack selection
+$$('.pack').forEach(p => p.addEventListener('click', e => {
+  if (e.target.closest('button')) return;
+  $$('.pack').forEach(x => x.classList.toggle('selected', x === p));
+}));
+// preview: one at a time, toggles to Stop
+$$('.preview').forEach(b => b.addEventListener('click', () => {
+  const on = b.classList.contains('playing');
+  $$('.preview').forEach(x => { x.classList.remove('playing');
+    x.innerHTML = '<svg viewBox="0 0 24 24"><path d="M7 5l12 7-12 7z"/></svg>Preview'; });
+  if (!on) { b.classList.add('playing');
+    b.innerHTML = '<svg viewBox="0 0 24 24"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>Stop'; }
+}));
+// remove: two-step inline confirm
+$$('.remove').forEach(b => b.addEventListener('click', () => b.closest('.pack').classList.add('confirming')));
+$$('.confirm .no').forEach(b => b.addEventListener('click', () => b.closest('.pack').classList.remove('confirming')));
+$$('.confirm .yes').forEach(b => b.addEventListener('click', () => {
+  b.closest('.pack').remove(); $('#fallback-note').style.display = 'block';
+}));
+$$('.status .x').forEach(x => x.addEventListener('click', () => x.parentElement.style.display = 'none'));
+// event rows: one expanded at a time, in flow
+$$('.voice-pill').forEach(p => p.addEventListener('click', () => {
+  const ev = p.closest('.event'), was = ev.classList.contains('open');
+  $$('.event').forEach(x => x.classList.remove('open'));
+  if (!was) ev.classList.add('open');
+}));
+$$('.vl-opt').forEach(o => o.addEventListener('click', () => {
+  const ev = o.closest('.event');
+  ev.querySelectorAll('.vl-opt').forEach(x => x.classList.toggle('active', x === o));
+  ev.querySelector('.pill-text').textContent = o.dataset.voice;
+  ev.classList.remove('open');
+}));
+// mode chip flip
+$$('.mode-chip').forEach(c => c.addEventListener('click', () => {
+  const seq = c.dataset.mode === 'sequential';
+  c.dataset.mode = seq ? 'shuffle' : 'sequential';
+  c.querySelector('span').textContent = seq ? 'Shuffle' : 'Sequential';
+  c.querySelector('svg').innerHTML = seq
+    ? '<path d="M4 7h4l8 10h4m0 0l-3-3m3 3l-3 3M4 17h4l2.5-3M13.5 10L16 7h4m0 0l-3-3m3 3l-3 3"/>'
+    : '<path d="M4 7h16M4 12h16M4 17h10"/>';
+}));
+// volume
+$('#vol').addEventListener('input', e => $('#vol-val').textContent = e.target.value + ' %');
+// trim stepper: step 5, 0..300, 0 = Full
+let trim = 30;
+const showTrim = () => $('#trim-val').textContent = trim === 0 ? 'Full' : trim + ' s';
+$('#trim-minus').addEventListener('click', () => { trim = Math.max(0, trim - 5); showTrim(); });
+$('#trim-plus').addEventListener('click', () => { trim = Math.min(300, trim + 5); showTrim(); });
+</script>
+</body>
+</html>
