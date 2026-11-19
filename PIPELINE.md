@@ -34,6 +34,13 @@
 - Never commit an asset without a licence entry (assets/licenses/). Never fabricate a UI value. tawadu-core stays UI/platform-free. Repo-local git identity unchanged. Offline-first; no telemetry.
 - Decisions: unanimous subagent panel before risky directions (user standing instruction).
 
+## Phase 3 product decisions (Atlas owns; answers to audio-ui-strings.md §10)
+
+1. **Duration** on a pack card = total playing time of the pack's primary athan sequence.
+2. **Default** voice = the pack the user marks default; if none marked, the first imported pack; if no packs, the honest empty state (never a guessed pack).
+3. **Supported formats** = the decoder's (symphonia) real runtime list, passed as `{ $formats }` — never hardcoded into copy.
+4. **Remove pack** also deletes its cached render files — the copy "removed from this device" stays true.
+
 ## Open debt / follow-ups
 
 - **Tray pixel check** (cosmetic): icon registration + full functional path verified; literal taskbar screenshot pending (taskbar auto-hidden during test; do it when naturally visible).
