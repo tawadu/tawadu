@@ -9,7 +9,7 @@
 //  - Arabic and Latin never share one `text:` string. The bidi algorithm then
 //    reorders the runs and the words come out of line. Each run gets its own Text.
 
-import { CityRow, MethodRow, OptionRow, Row } from "types.slint";
+import { CityRow, CreditPack, CreditRow, EventVoiceRow, MethodRow, OptionRow, PackRow, Row, VoiceOption } from "types.slint";
 
 // Design tokens — Plaster theme. Declared here (not in an imported file) so the
 // Rust side can reach the global and switch themes at runtime.
@@ -24,13 +24,17 @@ export global Palette {
     in property <color> accent-soft: #E3EEE9;
     in property <color> accent-ink: #FFFFFF;
     in property <color> gold: #B08A4A;
+    // Ramadan defines no distinct gold — its accent IS gold (Prism §4).
+    in property <bool> gold-is-accent: false;
     in property <length> radius: 16px;
     in property <length> radius-small: 10px;
 }
 
-// A card with a small caps heading.
+// A card with a small caps heading. The Arabic eyebrow (when present) is
+// its own run at the same size, never letterspaced (Prism §6 rule 4).
 component Section inherits VerticalLayout {
     in property <string> title;
+    in property <string> title-ar: "";
     padding: 12px;
     spacing: 6px;
     Text {
@@ -38,6 +42,12 @@ component Section inherits VerticalLayout {
         font-size: 11px;
         letter-spacing: 1px;
         color: Palette.ink-muted;
+    }
+    if (title-ar != "") : Text {
+        text: title-ar;
+        font-size: 11px;
+        color: Palette.ink-muted;
+        horizontal-alignment: right;
     }
 }
 
@@ -119,10 +129,18 @@ component Toggle inherits Rectangle {
     }
 }
 
-// A labelled − value + stepper.
+// A labelled − value + stepper. `step`/`min-value`/`max-value` extend the
+// original (defaults keep the iqamah steppers' behaviour unchanged); the
+// trim stepper uses step 5, range 0–300 and a zero label (Prism §7).
 component Stepper inherits HorizontalLayout {
     in property <string> label;
+    in property <string> label-ar: "";
     in property <int> value;
+    in property <int> step: 1;
+    in property <int> min-value: 0;
+    in property <int> max-value: 1000000;
+    in property <string> zero-label: "";
+    in property <string> zero-label-ar: "";
     callback changed(int);
     spacing: 8px;
     Text {
@@ -130,6 +148,12 @@ component Stepper inherits HorizontalLayout {
         font-size: 13px;
         color: Palette.ink;
         width: 84px;
+        vertical-alignment: center;
+    }
+    if (label-ar != "") : Text {
+        text: label-ar;
+        font-size: 13px;
+        color: Palette.ink-muted;
         vertical-alignment: center;
     }
     Rectangle {
@@ -149,16 +173,31 @@ component Stepper inherits HorizontalLayout {
             vertical-alignment: center;
         }
         TouchArea {
-            clicked => { changed(value - 1); }
+            clicked => { changed(Math.max(min-value, value - step)); }
         }
     }
-    Text {
+    if (value == 0 && zero-label != "") : Text {
+        text: zero-label;
+        font-size: 13px;
+        font-weight: 600;
+        color: Palette.ink;
+        width: 64px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    if (!(value == 0 && zero-label != "")) : Text {
         text: value;
         font-size: 15px;
         font-weight: 600;
         color: Palette.ink;
         width: 46px;
         horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    if (value == 0 && zero-label-ar != "") : Text {
+        text: zero-label-ar;
+        font-size: 13px;
+        color: Palette.ink-muted;
         vertical-alignment: center;
     }
     Rectangle {
@@ -178,7 +217,7 @@ component Stepper inherits HorizontalLayout {
             vertical-alignment: center;
         }
         TouchArea {
-            clicked => { changed(value + 1); }
+            clicked => { changed(Math.min(max-value, value + step)); }
         }
     }
 }
@@ -214,6 +253,306 @@ component Action inherits Rectangle {
 // on the Text itself — that is what Segmented, Stepper and Action do.)
 component RowText inherits Text {
     vertical-alignment: center;
+}
+
+// ---- audio components (Phase 3, Prism's proposal) ----
+
+// A small pill chip. tone "gold" is reserved for the athkar marker.
+component Badge inherits Rectangle {
+    in property <string> label;
+    in property <string> tone: "neutral";
+    height: 20px;
+    width: badge-text.preferred-width + 14px;
+    background: Palette.surface-secondary;
+    border-radius: 10px;
+    badge-text := Text {
+        text: label;
+        font-size: 11px;
+        color: tone == "gold" ? (Palette.gold-is-accent ? Palette.accent : Palette.gold) : Palette.ink-muted;
+        width: parent.width;
+        height: parent.height;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// One installed voice pack. Bundled packs show no Remove button (they are
+// the offline floor); removal is a two-step inline confirm, never a modal.
+component PackCard inherits Rectangle {
+    in property <PackRow> pack;
+    in property <bool> previewing;
+    in-out property <bool> confirming-remove;
+    callback preview(string);
+    callback remove(string);
+    callback show-attribution(string);
+    width: 210px;
+    height: 176px;
+    background: pack.is-selected ? Palette.accent-soft : Palette.surface;
+    border-color: pack.is-selected ? Palette.accent : Palette.border;
+    border-width: 1px;
+    border-radius: Palette.radius-small;
+    VerticalLayout {
+        padding: 10px;
+        spacing: 4px;
+        Text {
+            text: pack.name;
+            font-size: 15px;
+            font-weight: 600;
+            color: Palette.ink;
+            overflow: elide;
+        }
+        if (pack.name-ar != "") : Text {
+            text: pack.name-ar;
+            font-size: 13px;
+            color: Palette.ink-muted;
+            horizontal-alignment: right;
+            overflow: elide;
+        }
+        Text {
+            text: pack.reciter;
+            font-size: 12px;
+            color: Palette.ink-muted;
+            overflow: elide;
+        }
+        HorizontalLayout {
+            spacing: 6px;
+            // The licence badge opens the credits view — a licence
+            // obligation reachable in two clicks (Prism §3).
+            Badge {
+                label: pack.license;
+                TouchArea { clicked => { show-attribution(pack.id); } }
+            }
+        }
+        HorizontalLayout {
+            spacing: 6px;
+            RowText { text: "Duration"; font-size: 11px; color: Palette.ink-muted; }
+            RowText { text: "المدة"; font-size: 11px; color: Palette.ink-muted; }
+            if (pack.duration != "") : RowText {
+                text: pack.duration;
+                font-size: 12px;
+                font-weight: 600;
+                color: Palette.ink;
+            }
+            if (pack.duration == "") : RowText { text: "Not available"; font-size: 11px; color: Palette.ink-muted; }
+            if (pack.duration == "") : RowText { text: "غير متاح"; font-size: 11px; color: Palette.ink-muted; }
+        }
+        Rectangle { }
+        HorizontalLayout {
+            spacing: 6px;
+            Action {
+                label: previewing ? "Stop" : "Preview";
+                primary: previewing;
+                triggered => { preview(pack.id); }
+            }
+            if (!pack.is-bundled && !confirming-remove) : Action {
+                label: "Remove";
+                primary: false;
+                triggered => { confirming-remove = true; }
+            }
+            if (!pack.is-bundled && confirming-remove) : HorizontalLayout {
+                spacing: 4px;
+                Action {
+                    label: "Remove";
+                    primary: true;
+                    triggered => { remove(pack.id); confirming-remove = false; }
+                }
+                Action {
+                    label: "Cancel";
+                    primary: false;
+                    triggered => { confirming-remove = false; }
+                }
+            }
+        }
+    }
+}
+
+// One event's voice row: pill + mode chip, inline-expanding voice list
+// (in flow, banner pattern — never an overlay inside the Flickable).
+component VoiceRow inherits Rectangle {
+    in property <EventVoiceRow> event;
+    in property <bool> expanded;
+    in property <[VoiceOption]> voices;
+    callback toggle-expanded(string);
+    callback pick-voice(string, string);
+    callback set-mode(string, string);
+    callback reset-mode(string);
+    background: Palette.surface-secondary;
+    border-radius: Palette.radius-small;
+    VerticalLayout {
+        padding: 8px;
+        spacing: 6px;
+        HorizontalLayout {
+            spacing: 8px;
+            // Gold's one job in the audio band: the athkar marker.
+            if (event.kind == "athkar") : Rectangle {
+                width: 8px;
+                height: 8px;
+                y: 9px;
+                border-radius: 4px;
+                background: Palette.gold-is-accent ? Palette.accent : Palette.gold;
+            }
+            RowText {
+                text: event.label;
+                font-size: 13px;
+                font-weight: 600;
+                color: Palette.ink;
+            }
+            RowText {
+                text: event.label-ar;
+                font-size: 13px;
+                color: event.kind == "athkar" ? (Palette.gold-is-accent ? Palette.accent : Palette.gold) : Palette.ink-muted;
+            }
+            Rectangle { }
+            Rectangle {
+                height: 26px;
+                width: Math.min(180px, voice-pill.preferred-width + 18px);
+                background: Palette.surface;
+                border-color: Palette.border;
+                border-width: 1px;
+                border-radius: 13px;
+                voice-pill := Text {
+                    text: event.has-voice ? event.voice-label : "Not set";
+                    font-size: 12px;
+                    color: Palette.ink;
+                    width: parent.width;
+                    height: parent.height;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                TouchArea { clicked => { toggle-expanded(event.kind); } }
+            }
+            Rectangle {
+                height: 26px;
+                width: mode-chip.preferred-width + 18px;
+                background: Palette.accent-soft;
+                border-radius: 13px;
+                mode-chip := Text {
+                    text: event.mode == "shuffle" ? "Shuffle" : "Sequential";
+                    font-size: 12px;
+                    color: Palette.accent;
+                    width: parent.width;
+                    height: parent.height;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                TouchArea {
+                    clicked => { set-mode(event.kind, event.mode == "shuffle" ? "sequential" : "shuffle"); }
+                }
+            }
+        }
+        if (expanded) : VerticalLayout {
+            spacing: 4px;
+            if (!event.has-voice) : VerticalLayout {
+                spacing: 2px;
+                Text { text: "No voice selected"; font-size: 12px; font-weight: 600; color: Palette.ink; }
+                Text { text: "لم يُحدد صوت"; font-size: 12px; color: Palette.ink-muted; horizontal-alignment: right; }
+                Text { text: "Choose a pack for this event, or leave it on Default."; font-size: 11px; color: Palette.ink-muted; }
+                Text { text: "اختر حزمة لهذا الحدث، أو اتركها على الافتراضي."; font-size: 11px; color: Palette.ink-muted; horizontal-alignment: right; }
+            }
+            for option in voices : Rectangle {
+                height: 28px;
+                background: event.voice-id == option.id ? Palette.accent-soft : Palette.surface;
+                border-color: event.voice-id == option.id ? Palette.accent : Palette.border;
+                border-width: 1px;
+                border-radius: Palette.radius-small;
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 6px;
+                    RowText {
+                        text: option.label;
+                        font-size: 12px;
+                        color: event.voice-id == option.id ? Palette.accent : Palette.ink;
+                    }
+                    RowText {
+                        text: option.label-ar;
+                        font-size: 12px;
+                        color: event.voice-id == option.id ? Palette.accent : Palette.ink-muted;
+                    }
+                    Rectangle { }
+                    RowText {
+                        text: option.pack-name;
+                        font-size: 11px;
+                        color: Palette.ink-muted;
+                        overflow: elide;
+                    }
+                }
+                TouchArea { clicked => { pick-voice(event.kind, option.id); } }
+            }
+            // "Reset to pack default" exists ONLY while an override exists
+            // (decision 7); it reuses Quill's audio-voice-default copy.
+            if (event.has-override) : Rectangle {
+                height: 26px;
+                background: Palette.surface;
+                border-color: Palette.border;
+                border-width: 1px;
+                border-radius: Palette.radius-small;
+                HorizontalLayout {
+                    padding-left: 10px;
+                    spacing: 6px;
+                    RowText { text: "Default"; font-size: 11px; color: Palette.ink; }
+                    RowText { text: "الافتراضي"; font-size: 11px; color: Palette.ink-muted; }
+                }
+                TouchArea { clicked => { reset-mode(event.kind); } }
+            }
+        }
+    }
+}
+
+// The master volume slider with a FILLED track (Prism's polish note: the
+// fill is the value affordance). Thumb 16 px, track 4 px, drag math in the
+// TouchArea; 0–100.
+//
+// GEOMETRY CONTRACT (D1 fix — do not regress): fill end == knob center ==
+// pointer position, for EVERY value. Knob travel is (W − 16px), knob center
+// is (W − 16px)·r + 8px; the fill must span exactly that far, and pointer→
+// value must map over the same travel (offset 8px), not the full width.
+// Slint 1.19's default_geometry pass CENTERS any non-layout element whose
+// x/y is unbound and size ≠ 100% (x = (parent − self)/2) — the fill needs
+// explicit x: 0px; y: 0px or it anchors to the track center, not the left.
+component AudioSlider inherits Rectangle {
+    in property <int> value;
+    in property <int> min-value: 0;
+    in property <int> max-value: 100;
+    callback changed(int);
+    height: 24px;
+    Rectangle {
+        y: 10px;
+        height: 4px;
+        width: parent.width;
+        background: Palette.surface-secondary;
+        border-radius: 2px;
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            height: 4px;
+            // Ends exactly at the knob center: (W − 16)·r + 8.
+            width: (parent.width - 16px) * (value - min-value) / (max-value - min-value) + 8px;
+            background: Palette.accent;
+            border-radius: 2px;
+        }
+    }
+    Rectangle {
+        x: (parent.width - 16px) * (value - min-value) / (max-value - min-value);
+        y: 4px;
+        width: 16px;
+        height: 16px;
+        background: Palette.surface;
+        border-color: Palette.border;
+        border-width: 1px;
+        border-radius: 8px;
+    }
+    TouchArea {
+        clicked => {
+            changed(Math.max(min-value, Math.min(max-value, min-value + Math.round(((self.mouse-x - 8px) / (parent.width - 16px)) * (max-value - min-value)))));
+        }
+        moved => {
+            if (self.pressed) {
+                changed(Math.max(min-value, Math.min(max-value, min-value + Math.round(((self.mouse-x - 8px) / (parent.width - 16px)) * (max-value - min-value)))));
+            }
+        }
+    }
 }
 
 export component MainWindow inherits Window {
@@ -278,6 +617,28 @@ export component MainWindow inherits Window {
     in property <string> banner_body;
     in property <bool> banner_visible;
 
+    // ---- audio (Phase 3) ----
+    in property <[PackRow]> audio_packs;
+    in property <[VoiceOption]> audio_voices;
+    in property <[VoiceOption]> chime_voices;
+    in property <[EventVoiceRow]> event_voices;
+    in property <string> previewing_pack_id;
+    in property <string> expanded_event;
+    in property <int> audio_volume;
+    in property <int> athan_stop_after_s;
+    in property <string> trim_unit;
+    in property <string> trim_unit_ar;
+    in property <string> audio_message;
+    in property <string> audio_message_ar;
+    in property <string> audio_message_arg;
+    in property <string> audio_message_ar_after;
+
+    // ---- credits / attribution ----
+    in property <[CreditPack]> credit_packs;
+    in property <[CreditRow]> credit_fonts;
+    in property <[CreditRow]> credit_libs;
+    in property <string> code_license;
+
     // ---- callbacks ----
     callback open-settings();
     callback close-settings();
@@ -297,6 +658,19 @@ export component MainWindow inherits Window {
     callback set-quiet-from(string);
     callback set-quiet-to(string);
     callback save-settings();
+    callback import-pack-file();
+    callback import-pack-folder();
+    callback preview-pack(string);
+    callback remove-pack(string);
+    callback show-attribution(string);
+    callback pick-event-voice(string, string);
+    callback set-event-mode(string, string);
+    callback reset-event-mode(string);
+    callback toggle-event-expanded(string);
+    callback set-audio-volume(int);
+    callback set-athan-trim(int);
+    callback dismiss-audio-message();
+    callback close-credits();
 
     VerticalLayout {
         padding: 24px;
@@ -792,27 +1166,254 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                Text {
-                    text: status_message;
-                    font-size: 12px;
-                    color: Palette.accent;
-                }
+            }
+            }
 
-                HorizontalLayout {
-                    spacing: 10px;
-                    Action {
-                        label: "حفظ";
-                        primary: true;
-                        triggered => { save-settings(); }
+            // ---- AUDIO band (Prism's proposal: full-width, below the
+            // columns, inside the same Flickable; save row stays last) ----
+            Rectangle {
+                background: Palette.surface;
+                border-color: Palette.border;
+                border-width: 1px;
+                border-radius: Palette.radius;
+                Section { title: "AUDIO"; title-ar: "الصوت";
+                    HorizontalLayout {
+                        spacing: 6px;
+                        RowText { text: "Voice packs"; font-size: 13px; font-weight: 600; color: Palette.ink; }
+                        RowText { text: "حزم الأصوات"; font-size: 13px; color: Palette.ink-muted; }
                     }
-                    Action {
-                        label: "إغلاق";
-                        primary: false;
-                        triggered => { close-settings(); }
+                    if (audio_packs.length == 0) : Rectangle {
+                        height: 130px;
+                        background: Palette.surface-secondary;
+                        border-radius: Palette.radius-small;
+                        VerticalLayout {
+                            padding: 14px;
+                            spacing: 4px;
+                            Text { text: "No voice packs yet"; font-size: 14px; font-weight: 600; color: Palette.ink; }
+                            Text { text: "لا توجد حزم صوتية بعد"; font-size: 13px; color: Palette.ink-muted; horizontal-alignment: right; }
+                            Text { text: "Add a voice pack to play the adhan and athkar."; font-size: 12px; color: Palette.ink-muted; }
+                            Text { text: "أضف حزمة صوتية لتشغيل الأذان والأذكار."; font-size: 12px; color: Palette.ink-muted; horizontal-alignment: right; }
+                            Action { label: "Add pack"; primary: true; triggered => { import-pack-folder(); } }
+                        }
+                    }
+                    if (audio_packs.length > 0) : Flickable {
+                        height: 190px;
+                        content-width: (audio_packs.length + 1) * 220px;
+                        HorizontalLayout {
+                            spacing: 10px;
+                            for pack in audio_packs : PackCard {
+                                pack: pack;
+                                previewing: previewing_pack_id == pack.id;
+                                preview(id) => { preview-pack(id); }
+                                remove(id) => { remove-pack(id); }
+                                show-attribution(id) => { show-attribution(id); }
+                            }
+                            Rectangle {
+                                width: 210px;
+                                height: 176px;
+                                background: Palette.surface-secondary;
+                                border-color: Palette.border;
+                                border-width: 1px;
+                                border-radius: Palette.radius-small;
+                                VerticalLayout {
+                                    padding: 10px;
+                                    spacing: 8px;
+                                    alignment: center;
+                                    Text { text: "+"; font-size: 24px; color: Palette.ink-muted; horizontal-alignment: center; }
+                                    Action { label: "Import from file…"; primary: true; triggered => { import-pack-file(); } }
+                                    Action { label: "Add pack"; primary: false; triggered => { import-pack-folder(); } }
+                                }
+                            }
+                        }
+                    }
+                    if (audio_message != "") : Rectangle {
+                        background: Palette.surface-secondary;
+                        border-radius: Palette.radius-small;
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 4px;
+                            Text { text: audio_message; font-size: 12px; color: Palette.ink; wrap: word-wrap; }
+                            // Arabic reading order is RTL: with no layout
+                            // direction support in Slint 1.19, the runs are
+                            // placed in reverse so before reads rightmost.
+                            HorizontalLayout {
+                                spacing: 0px;
+                                Text { text: audio_message_ar_after; font-size: 12px; color: Palette.ink; }
+                                Text { text: audio_message_arg; font-size: 12px; color: Palette.ink; }
+                                Text { text: audio_message_ar; font-size: 12px; color: Palette.ink; }
+                            }
+                        }
+                        TouchArea { clicked => { dismiss-audio-message(); } }
+                    }
+                    HorizontalLayout {
+                        spacing: 20px;
+                        alignment: start;
+                        Rectangle {
+                            width: 460px;
+                            background: Palette.surface;
+                            border-color: Palette.border;
+                            border-width: 1px;
+                            border-radius: Palette.radius;
+                            Section { title: "Voice per event"; title-ar: "الصوت لكل حدث";
+                                for row in event_voices : VoiceRow {
+                                    event: row;
+                                    expanded: expanded_event == row.kind;
+                                    voices: row.kind == "chime" ? chime_voices : audio_voices;
+                                    toggle-expanded(kind) => { toggle-event-expanded(kind); }
+                                    pick-voice(kind, id) => { pick-event-voice(kind, id); }
+                                    set-mode(kind, mode) => { set-event-mode(kind, mode); }
+                                    reset-mode(kind) => { reset-event-mode(kind); }
+                                }
+                            }
+                        }
+                        Rectangle {
+                            width: 420px;
+                            background: Palette.surface;
+                            border-color: Palette.border;
+                            border-width: 1px;
+                            border-radius: Palette.radius;
+                            Section { title: "Playback"; title-ar: "التشغيل";
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    RowText { text: "Volume"; font-size: 13px; color: Palette.ink; width: 60px; }
+                                    RowText { text: "مستوى الصوت"; font-size: 13px; color: Palette.ink-muted; }
+                                    AudioSlider {
+                                        width: 200px;
+                                        value: audio_volume;
+                                        changed(v) => { set-audio-volume(v); }
+                                    }
+                                    RowText { text: audio_volume; font-size: 13px; font-weight: 600; color: Palette.ink; }
+                                    RowText { text: "%"; font-size: 13px; color: Palette.ink-muted; }
+                                }
+                                Stepper {
+                                    label: "Stop after";
+                                    label-ar: "إيقاف بعد";
+                                    value: athan_stop_after_s;
+                                    step: 5;
+                                    min-value: 0;
+                                    max-value: 300;
+                                    zero-label: "No trim";
+                                    zero-label-ar: "بلا قص";
+                                    changed(v) => { set-athan-trim(v); }
+                                }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    if (trim_unit != "") : RowText { text: trim_unit; font-size: 11px; color: Palette.ink-muted; }
+                                    if (trim_unit_ar != "") : RowText { text: trim_unit_ar; font-size: 11px; color: Palette.ink-muted; }
+                                }
+                            }
+                        }
                     }
                 }
             }
+
+            Text {
+                text: status_message;
+                font-size: 12px;
+                color: Palette.accent;
             }
+
+            HorizontalLayout {
+                spacing: 10px;
+                Action {
+                    label: "حفظ";
+                    primary: true;
+                    triggered => { save-settings(); }
+                }
+                Action {
+                    label: "إغلاق";
+                    primary: false;
+                    triggered => { close-settings(); }
+                }
+            }
+            }
+        }
+
+        // ---- credits / attribution (licence badge → here, ≤ 2 clicks) ----
+        if (page == "credits") : Flickable {
+            VerticalLayout {
+                spacing: 14px;
+                HorizontalLayout {
+                    spacing: 12px;
+                    Text { text: "Credits and licences"; font-size: 20px; font-weight: 600; color: Palette.ink; }
+                    Text { text: "التقديرات والتراخيص"; font-size: 20px; color: Palette.ink; }
+                    Rectangle { }
+                    Action { label: "إغلاق"; primary: false; triggered => { close-credits(); } }
+                }
+                Text { text: "Every bundled recording and file keeps its own licence, shown here as provided."; font-size: 12px; color: Palette.ink-muted; wrap: word-wrap; }
+                Text { text: "كل تسجيل أو ملف مرفق يحتفظ بترخيصه الخاص، ويظهر هنا كما ورد."; font-size: 12px; color: Palette.ink-muted; horizontal-alignment: right; wrap: word-wrap; }
+                HorizontalLayout {
+                    spacing: 0px;
+                    Text { text: "Tawadu is released under the "; font-size: 12px; color: Palette.ink; }
+                    Text { text: code_license; font-size: 12px; font-weight: 600; color: Palette.ink; }
+                    Text { text: " licence."; font-size: 12px; color: Palette.ink; }
+                }
+                // RTL reading order via reversed runs (see audio strip).
+                HorizontalLayout {
+                    spacing: 0px;
+                    Text { text: "."; font-size: 12px; color: Palette.ink; }
+                    Text { text: code_license; font-size: 12px; font-weight: 600; color: Palette.ink; }
+                    Text { text: "يُصدر تطبيق تواضع وفق ترخيص "; font-size: 12px; color: Palette.ink; }
+                }
+                Rectangle {
+                    background: Palette.surface;
+                    border-color: Palette.border;
+                    border-width: 1px;
+                    border-radius: Palette.radius;
+                    Section { title: "Voice packs"; title-ar: "حزم الأصوات";
+                        if (credit_packs.length == 0) : Text { text: "No licences to show yet."; font-size: 12px; color: Palette.ink-muted; }
+                        if (credit_packs.length == 0) : Text { text: "لا توجد تراخيص لعرضها بعد."; font-size: 12px; color: Palette.ink-muted; horizontal-alignment: right; }
+                        for cp in credit_packs : Rectangle {
+                            background: Palette.surface-secondary;
+                            border-radius: Palette.radius-small;
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 4px;
+                                Text { text: cp.name; font-size: 14px; font-weight: 600; color: Palette.ink; }
+                                if (cp.name-ar != "") : Text { text: cp.name-ar; font-size: 13px; color: Palette.ink-muted; horizontal-alignment: right; }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    RowText { text: "Reciter"; font-size: 11px; color: Palette.ink-muted; }
+                                    RowText { text: cp.reciter; font-size: 12px; color: Palette.ink; }
+                                    RowText { text: "Source"; font-size: 11px; color: Palette.ink-muted; }
+                                    RowText { text: cp.source; font-size: 12px; color: Palette.ink; overflow: elide; }
+                                    RowText { text: "Licence"; font-size: 11px; color: Palette.ink-muted; }
+                                    Badge { label: cp.license; }
+                                }
+                                Text { text: cp.attribution; font-size: 12px; color: Palette.ink; wrap: word-wrap; }
+                                Text { text: cp.license-text; font-size: 11px; color: Palette.ink-muted; wrap: word-wrap; }
+                            }
+                        }
+                    }
+                }
+                Rectangle {
+                    background: Palette.surface;
+                    border-color: Palette.border;
+                    border-width: 1px;
+                    border-radius: Palette.radius;
+                    Section { title: "Fonts"; title-ar: "الخطوط";
+                        for font in credit_fonts : HorizontalLayout {
+                            spacing: 8px;
+                            RowText { text: font.name; font-size: 12px; color: Palette.ink; width: 180px; }
+                            Badge { label: font.license; }
+                            RowText { text: font.role; font-size: 11px; color: Palette.ink-muted; }
+                        }
+                    }
+                }
+                Rectangle {
+                    background: Palette.surface;
+                    border-color: Palette.border;
+                    border-width: 1px;
+                    border-radius: Palette.radius;
+                    Section { title: "Software libraries"; title-ar: "مكتبات البرمجيات";
+                        for lib in credit_libs : HorizontalLayout {
+                            spacing: 8px;
+                            RowText { text: lib.name; font-size: 12px; color: Palette.ink; width: 180px; }
+                            Badge { label: lib.license; }
+                            RowText { text: lib.role; font-size: 11px; color: Palette.ink-muted; }
+                        }
+                    }
+                }
             }
         }
     }

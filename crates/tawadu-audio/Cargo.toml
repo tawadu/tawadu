@@ -5,8 +5,13 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+tawadu-core = { path = "../tawadu-core" }
 rodio.workspace = true
 symphonia.workspace = true
 hound.workspace = true
-rubato.workspace = true
+sha2.workspace = true
+zip.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
 log.workspace = true
