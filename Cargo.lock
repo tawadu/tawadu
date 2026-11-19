@@ -5373,6 +5373,7 @@ dependencies = [
  "tawadu-core",
  "tray-icon",
  "windows",
+ "windows-registry",
  "zbus 5.19.0",
 ]
 

@@ -160,6 +160,19 @@ pub fn already_fired(last: Option<DateTime<Utc>>, at: DateTime<Utc>) -> bool {
     last.is_some_and(|last| last >= at)
 }
 
+/// Filter due events down to those not yet announced, consulting the ledger
+/// per event identity (kind + prayer + instant). Identities are independent:
+/// recording one fire never suppresses a different due event, so a sleep
+/// jump across several due events misses nothing.
+pub fn fireable(
+    due: Vec<Event>,
+    mut last_fired: impl FnMut(&Event) -> Option<DateTime<Utc>>,
+) -> Vec<Event> {
+    due.into_iter()
+        .filter(|event| !already_fired(last_fired(event), event.at))
+        .collect()
+}
+
 impl Timeline {
     /// The first event strictly after `now`.
     pub fn next_after(&self, now: DateTime<Utc>) -> Option<&Event> {
@@ -333,6 +346,63 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    fn fajr_events() -> Vec<Event> {
+        let at = |s: &str| DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc);
+        vec![
+            Event {
+                kind: EventKind::PreAlert,
+                label: "Fajr",
+                at: at("2026-11-19T01:41:00Z"),
+            },
+            Event {
+                kind: EventKind::Prayer,
+                label: "Fajr",
+                at: at("2026-11-19T01:51:00Z"),
+            },
+            Event {
+                kind: EventKind::Iqamah,
+                label: "Fajr",
+                at: at("2026-11-19T02:01:00Z"),
+            },
+        ]
+    }
+
+    #[test]
+    fn fireable_skips_only_the_already_fired_identity() {
+        let events = fajr_events();
+        let pre = events[0].at;
+        // Restart boundary: the stored instant EQUALS event.at -> skip.
+        let kept = fireable(events, |e| {
+            if e.kind == EventKind::PreAlert {
+                Some(pre)
+            } else {
+                None
+            }
+        });
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0].kind, EventKind::Prayer);
+        assert_eq!(kept[1].kind, EventKind::Iqamah);
+    }
+
+    #[test]
+    fn fireable_sleep_jump_misses_nothing_due() {
+        // A sleep jump makes several events due at once; only the one already
+        // announced is filtered — every other due event survives.
+        let events = fajr_events();
+        let pre = events[0].at;
+        let prayer = events[1].at;
+        let kept = fireable(events, |e| match e.kind {
+            EventKind::PreAlert => Some(pre),
+            EventKind::Prayer => Some(prayer),
+            _ => None,
+        });
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].kind, EventKind::Iqamah);
+        // Nothing recorded: everything due stays due.
+        let all = fireable(fajr_events(), |_| None);
+        assert_eq!(all.len(), 3);
     }
 
     #[test]

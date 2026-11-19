@@ -78,6 +78,9 @@ pub struct Settings {
     pub pre_alert_minutes: u32,
     pub theme: Theme,
     pub language: Language,
+    /// `serde(default)` so a settings blob written before autostart existed
+    /// upgrades to OFF instead of falling back to defaults wholesale.
+    #[serde(default)]
     pub start_at_login: bool,
     pub athan_volume: f32,
     /// `serde(default)` so a settings blob written before notifications existed
@@ -113,6 +116,17 @@ impl Default for Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pre_autostart_blob_upgrades_with_autostart_off() {
+        // A blob written before start_at_login existed must load (not fall
+        // back to defaults wholesale) and the new flag must default OFF.
+        let mut value = serde_json::to_value(Settings::default()).unwrap();
+        value.as_object_mut().unwrap().remove("start_at_login");
+        let upgraded: Settings = serde_json::from_value(value).expect("old blob must load");
+        assert!(!upgraded.start_at_login);
+        assert_eq!(upgraded.location.name, Settings::default().location.name);
+    }
 
     #[test]
     fn defaults_to_riyadh_umm_al_qura() {

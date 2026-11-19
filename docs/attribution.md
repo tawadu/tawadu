@@ -42,6 +42,7 @@ Surface these in the in-app Credits screen alongside the asset entries.
 | Crate | Version | Licence | Role |
 |---|---|---|---|
 | `auto-launch` | 0.6.0 | MIT | Opt-in start-at-login (HKCU Run / launch agent / .desktop); transitives MIT-compatible |
+| `windows-registry` | 0.6.1 | MIT OR Apache-2.0 | Windows-only: read the registered Run value to detect a moved exe path |
 | `tray-icon` | 0.26.1 | MIT OR Apache-2.0 | System tray icon (ksni backend on Linux) |
 | `muda` | 0.21.2 | Apache-2.0 OR MIT | Tray/app menus, MenuEvent channel |
 | `ksni` | 0.3.7 | Unlicense | Pure-Rust StatusNotifierItem (Linux tray) |

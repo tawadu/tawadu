@@ -77,6 +77,12 @@ impl SaveDebounce {
         self.pending_since = None;
     }
 
+    /// Force the pending write out (quit / hide / exit): true when a save
+    /// was pending. Survives abrupt exit before the debounce timer fires.
+    fn flush(&mut self) -> bool {
+        self.pending_since.take().is_some()
+    }
+
     /// True exactly once when the window has elapsed; clears the pending
     /// save so the next tick does not write again.
     fn take_if_due(&mut self, now: Instant) -> bool {
@@ -500,6 +506,14 @@ impl AppState {
         };
     }
 
+    /// Flush a pending debounced save immediately (quit / hide / exit), so
+    /// the trailing write survives an abrupt exit mid-debounce.
+    fn flush_save(&mut self) {
+        if self.debounce.borrow_mut().flush() {
+            self.save();
+        }
+    }
+
     /// A setting changed: wake the scheduler (the timeline may have changed)
     /// and (re)start the debounced save-on-change window.
     fn changed(&self) {
@@ -719,12 +733,43 @@ fn spawn_scheduler(
                 }
 
                 let fired_at = now();
-                for event in timeline.due(
+                let due = timeline.due(
                     watermark,
                     fired_at,
                     chrono::Duration::seconds(LATE_TOLERANCE_SECONDS),
-                ) {
+                );
+                // Ledger filter: per-identity skip of already-announced
+                // events (restart inside the tolerance). Read errors fail
+                // open (None -> fire): a broken ledger must never silence.
+                let fireable = scheduler::fireable(due, |event| {
+                    let guard = state.lock().unwrap();
+                    let last = guard.storage.as_ref().and_then(|storage| {
+                        storage
+                            .last_fired(event.kind.key(), event.label)
+                            .ok()
+                            .flatten()
+                    });
+                    if scheduler::already_fired(last, event.at) {
+                        log::info!("skipping already-fired {} · {}", event.kind.key(), event.at);
+                    }
+                    last
+                });
+                for event in fireable {
                     if let Some((title, body)) = announce(&event, &location, &settings, now()) {
+                        // Transactional order: persist the fire BEFORE the
+                        // announcement, so a crash after announcing can never
+                        // re-announce on restart. Write failure is logged and
+                        // fails open (the alert still goes out).
+                        {
+                            let guard = state.lock().unwrap();
+                            if let Some(storage) = guard.storage.as_ref() {
+                                if let Err(error) =
+                                    storage.record_fired(event.kind.key(), event.label, event.at)
+                                {
+                                    log::warn!("fired-ledger write failed: {error}");
+                                }
+                            }
+                        }
                         log::info!("firing {} · {} — {}", event.kind.key(), event.at, title);
                         let _ = notices.send(Notice::Banner {
                             title: title.clone(),
@@ -873,8 +918,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tray_ok = tray.is_some();
     {
         let hidden = Arc::clone(&hidden);
+        let flush_state = Arc::clone(&state);
         ui.window().on_close_requested(move || {
             if tray_ok {
+                // Flush the trailing debounced write before hiding: the
+                // process may stay hidden for days, or be killed outright.
+                flush_state.lock().unwrap().flush_save();
                 hidden.store(true, Ordering::SeqCst);
                 log::info!("hidden to tray");
             }
@@ -908,12 +957,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let menu_timer = Timer::default();
     {
         let show_window = show_window.clone();
+        let quit_state = Arc::clone(&state);
         menu_timer.start(TimerMode::Repeated, Duration::from_millis(250), move || {
             while let Ok(event) = muda::MenuEvent::receiver().try_recv() {
                 match event.id().0.as_str() {
                     "show" => show_window(),
                     "quit" => {
                         log::info!("quitting (tray menu)");
+                        quit_state.lock().unwrap().flush_save();
                         let _ = slint::quit_event_loop();
                     }
                     _ => {}
@@ -1315,12 +1366,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|value| value.parse::<u64>().ok())
     {
         let timer = Timer::default();
+        let quit_state = Arc::clone(&state);
         timer.start(
             TimerMode::SingleShot,
             Duration::from_millis(ms),
             move || {
                 log::info!("debug: quitting event loop");
+                quit_state.lock().unwrap().flush_save();
                 let _ = slint::quit_event_loop();
+            },
+        );
+        debug_timers.push(timer);
+    }
+    if let Some(ms) = std::env::var("TAWADU_DEBUG_TOUCH_SETTING_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+    {
+        let timer = Timer::default();
+        let touch_state = Arc::clone(&state);
+        timer.start(
+            TimerMode::SingleShot,
+            Duration::from_millis(ms),
+            move || {
+                // Mutate through the same path as a UI handler: marks the
+                // debounce window, no immediate save. Lets process tests
+                // exercise the trailing-write durability headlessly.
+                let mut state = touch_state.lock().unwrap();
+                state.settings.pre_alert_minutes = 15;
+                state.changed();
+                log::info!("debug: touched setting (debounce pending)");
             },
         );
         debug_timers.push(timer);
@@ -1330,8 +1404,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // app level, not just propagate as main's Err.
     if let Err(error) = ui.run() {
         log::error!("event loop failed: {error}");
+        state.lock().unwrap().flush_save();
         return Err(error.into());
     }
+    // Catch-all exit flush (macOS Cmd+Q and any other loop exit): the
+    // trailing debounced write must survive an abrupt exit mid-debounce.
+    state.lock().unwrap().flush_save();
     Ok(())
 }
 
@@ -1486,6 +1564,15 @@ mod tests {
         d.touch(t0);
         d.cancel();
         assert!(!d.take_if_due(t0 + Duration::from_millis(5000)));
+    }
+
+    #[test]
+    fn debounce_flush_forces_the_pending_write_once() {
+        let mut d = SaveDebounce::new(Duration::from_millis(800));
+        d.touch(Instant::now());
+        assert!(d.flush());
+        assert!(!d.flush());
+        assert!(!d.take_if_due(Instant::now() + Duration::from_secs(5)));
     }
 
     #[test]

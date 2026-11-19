@@ -272,7 +272,8 @@ converged on the ordering above and caught real defects:
   dhikr that says "one hundred times" — a visible lie in a religious app. Removed.
 - **Fixed:** yesterday's timeline was discarded at local midnight, dropping a late
   Isha iqamah or sleep-athkar window in high-latitude locations.
-- **Open:** no fired-event ledger, so a restart within 120 s re-announces an event.
+- **Resolved (Steps 2–3):** fired-event ledger (schema v2) — the fire is persisted
+  before the announcement; restarts skip already-fired identities, sleep jumps miss nothing due.
 - **Resolved (Steps 2–3):** quiet hours are evaluated at EVENT time; the athan
   stays essential and is never suppressed.
 - **Resolved (Steps 2–3):** settings now save debounced on change (800 ms after

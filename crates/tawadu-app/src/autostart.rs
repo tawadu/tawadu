@@ -22,11 +22,43 @@ pub enum Reconcile {
 /// Pure decision: the user's setting vs the actual registration state.
 /// Setting true but unregistered → register; false but registered →
 /// unregister; agreement → nothing.
-pub fn reconcile(want: bool, registered: bool) -> Reconcile {
+pub fn reconcile(want: bool, registered: bool, path_current: bool) -> Reconcile {
     match (want, registered) {
+        // A registration pointing at a moved exe (debug -> release) is an
+        // orphan: re-registering overwrites the path (enable is an upsert).
         (true, false) => Reconcile::Register,
+        (true, true) if !path_current => Reconcile::Register,
         (false, true) => Reconcile::Unregister,
         _ => Reconcile::None,
+    }
+}
+
+/// Whether the registered command points at the running executable.
+/// Windows reads the HKCU Run value (the debug/release path-move trap);
+/// macOS/Linux report true — their launch-agent/.desktop paths are stable
+/// per user, and Phase 6 packaging revisits all platforms.
+fn registration_path_current(launcher: &AutoLaunch) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        use windows_registry::CURRENT_USER;
+        let Ok(key) = CURRENT_USER.open(r"SOFTWARE\Microsoft\Windows\CurrentVersion\Run") else {
+            return true; // unreadable -> do not force a rewrite
+        };
+        let Ok(value) = key.get_value("Tawadu") else {
+            return true;
+        };
+        // REG_SZ payload is UTF-16, NUL-terminated, quoted by auto-launch.
+        let wide = value.as_wide();
+        let end = wide.iter().position(|&c| c == 0).unwrap_or(wide.len());
+        let registered = String::from_utf16_lossy(&wide[..end]);
+        registered
+            .trim_matches('"')
+            .eq_ignore_ascii_case(launcher.get_app_path())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = launcher;
+        true
     }
 }
 
@@ -69,7 +101,8 @@ pub fn reconcile_at_startup(want: bool) {
             return;
         }
     };
-    match reconcile(want, registered) {
+    let path_current = registration_path_current(&launcher);
+    match reconcile(want, registered, path_current) {
         Reconcile::Register => match launcher.enable() {
             Ok(()) => log::info!("autostart: registered (setting was on, registration missing)"),
             Err(error) => log::warn!("autostart: registration failed: {error}"),
@@ -105,17 +138,27 @@ mod tests {
 
     #[test]
     fn reconcile_registers_when_wanted_but_missing() {
-        assert_eq!(reconcile(true, false), Reconcile::Register);
+        assert_eq!(reconcile(true, false, true), Reconcile::Register);
+        assert_eq!(reconcile(true, false, false), Reconcile::Register);
     }
 
     #[test]
     fn reconcile_unregisters_when_stale() {
-        assert_eq!(reconcile(false, true), Reconcile::Unregister);
+        assert_eq!(reconcile(false, true, true), Reconcile::Unregister);
+        assert_eq!(reconcile(false, true, false), Reconcile::Unregister);
     }
 
     #[test]
     fn reconcile_leaves_agreement_alone() {
-        assert_eq!(reconcile(true, true), Reconcile::None);
-        assert_eq!(reconcile(false, false), Reconcile::None);
+        // Idempotent: no repeated registry writes when everything agrees.
+        assert_eq!(reconcile(true, true, true), Reconcile::None);
+        assert_eq!(reconcile(false, false, true), Reconcile::None);
+        assert_eq!(reconcile(false, false, false), Reconcile::None);
+    }
+
+    #[test]
+    fn reconcile_reregisters_when_the_exe_path_moved() {
+        // Orphan prevention: registered but pointing at an old exe path.
+        assert_eq!(reconcile(true, true, false), Reconcile::Register);
     }
 }
