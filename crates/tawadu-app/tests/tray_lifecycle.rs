@@ -521,4 +521,60 @@ fn tray_lifecycle() {
         let _ = hider.kill();
         let _ = hider.wait();
     }
+
+    // ---- phase 6: IDLE tick re-follows the context across a boundary ----
+    // Sentinel F1: with NO interaction, crossing Dhuhr (08:39Z for the
+    // default Riyadh location on 2026-11-19, probed via prayer::compute)
+    // must switch the athkar context Morning -> AfterPrayer on the 1 s tick.
+    // Start 30 debug-seconds before the boundary at scale 12 (~2.5 s real);
+    // the athan firing is the independent boundary-sanity marker.
+    let home6 = fresh_config_home();
+    let (mut idle, log6) = spawn_app_in(
+        &home6,
+        &[
+            ("TAWADU_DEBUG_NOW", "2026-11-19T08:38:30Z"),
+            ("TAWADU_DEBUG_TIME_SCALE", "12"),
+            ("TAWADU_DEBUG_MAX_SLICE_MS", "5000"),
+            ("TAWADU_DEBUG_AUTOQUIT_MS", "12000"),
+        ],
+    );
+    assert!(
+        wait_for_log(&log6, "firing prayer", Duration::from_secs(10)),
+        "Dhuhr athan must fire (boundary sanity); logs:\n{}",
+        log6.lock().unwrap()
+    );
+    assert!(
+        wait_for_log(
+            &log6,
+            "athkar context: morning -> after_prayer",
+            Duration::from_secs(8)
+        ),
+        "IDLE tick must re-follow the athkar context across the boundary; logs:\n{}",
+        log6.lock().unwrap()
+    );
+    let _ = idle.wait();
+
+    // ---- phase 7: IDLE tick honors day rollover (honest reset) ----
+    // 23:59:40 Riyadh -> midnight in ~1.7 s real at scale 12. The context
+    // stays Sleep (before Fajr); the DAY must roll and progress reload.
+    let home7 = fresh_config_home();
+    let (mut rollover, log7) = spawn_app_in(
+        &home7,
+        &[
+            ("TAWADU_DEBUG_NOW", "2026-11-19T20:59:40Z"),
+            ("TAWADU_DEBUG_TIME_SCALE", "12"),
+            ("TAWADU_DEBUG_MAX_SLICE_MS", "5000"),
+            ("TAWADU_DEBUG_AUTOQUIT_MS", "12000"),
+        ],
+    );
+    assert!(
+        wait_for_log(
+            &log7,
+            "athkar day rollover: 2026-11-19 -> 2026-11-20",
+            Duration::from_secs(10)
+        ),
+        "IDLE tick must reload progress at midnight; logs:\n{}",
+        log7.lock().unwrap()
+    );
+    let _ = rollover.wait();
 }
