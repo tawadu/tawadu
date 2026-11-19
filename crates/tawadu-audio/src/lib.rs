@@ -18,6 +18,7 @@
 pub mod bundled;
 pub mod chime;
 pub mod edit;
+pub mod engine;
 pub mod error;
 pub mod import;
 pub mod library;

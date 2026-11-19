@@ -26,6 +26,10 @@ use tawadu_core::scheduler::{self, EventKind, IqamahOffsets, Timeline};
 use tawadu_core::settings::{Language, Settings, Theme};
 use tawadu_core::storage::{LoadOutcome, Storage};
 
+use tawadu_audio::engine::{self, AudioEngine, PlayRequest};
+use tawadu_audio::library::PackLibrary;
+use tawadu_audio::routing;
+
 slint::include_modules!();
 
 /// The named methods offered in the interface. `Method::Custom` needs angle
@@ -107,6 +111,10 @@ struct AppState {
     /// `changed(&self)` can mark it without widening every call site; the
     /// AppState Mutex already serializes access.
     debounce: std::cell::RefCell<SaveDebounce>,
+    /// The installed voice-pack library (shared with the scheduler thread).
+    library: Option<Arc<Mutex<PackLibrary>>>,
+    /// The background playback engine (fail-soft when no audio device).
+    engine: Option<AudioEngine>,
 }
 
 /// Decode a serde snake_case key back into a config value.
@@ -617,6 +625,17 @@ fn event_kind(kind: EventKind) -> Option<NotificationKind> {
     }
 }
 
+/// Which voice event an announcement maps to. The pre-alert is the short
+/// chime moment; the athan/iqamah/athkar events voice from their packs.
+fn voice_event(kind: EventKind) -> &'static str {
+    match kind {
+        EventKind::PreAlert => routing::EVENT_CHIME,
+        EventKind::Prayer => routing::EVENT_ATHAN,
+        EventKind::Iqamah => routing::EVENT_IQAMAH,
+        EventKind::AthkarWindow => routing::EVENT_ATHKAR,
+    }
+}
+
 /// Decide whether to announce an event, and with what words. `None` means the
 /// user's switches say stay quiet.
 fn announce(
@@ -787,6 +806,29 @@ fn spawn_scheduler(
                             title: title.clone(),
                             body: body.clone(),
                         });
+                        // Audio rides the SAME should_notify gate as the
+                        // banner: announce() already judged quiet hours at
+                        // the EVENT's local time and applied the
+                        // athan-essential exemption. There is no separate
+                        // audio gate to drift out of sync.
+                        {
+                            let guard = state.lock().unwrap();
+                            if let (Some(engine), Some(library)) = (&guard.engine, &guard.library) {
+                                let lib = library.lock().unwrap();
+                                if let Some(plan) = engine::plan_for_event(
+                                    voice_event(event.kind),
+                                    &settings.audio,
+                                    lib.packs(),
+                                ) {
+                                    engine.play(PlayRequest {
+                                        plan,
+                                        volume: settings.athan_volume,
+                                        library_dir: lib.dir().to_path_buf(),
+                                        cache_dir: lib.cache_root().to_path_buf(),
+                                    });
+                                }
+                            }
+                        }
                         // OS delivery must NEVER block the scheduler:
                         // notify-rust's macOS backend waits for a click by
                         // default (nsusernotifications.rs wait_for_click),
@@ -877,12 +919,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    // ---- audio: library + engine ----
+    // The device opens on the audio thread (fail-soft when absent); the
+    // bundled floor materializes on a background thread because first-run
+    // duration probing must never block the UI. Lock order everywhere:
+    // AppState mutex, THEN library mutex.
+    let (library, engine) = match Storage::default_data_dir() {
+        Some(dir) => {
+            let library = Arc::new(Mutex::new(PackLibrary::open(
+                dir.join("voices"),
+                dir.join("audio-cache"),
+            )));
+            let floor = Arc::clone(&library);
+            if let Err(error) = std::thread::Builder::new()
+                .name("tawadu-audio-floor".into())
+                .spawn(move || {
+                    floor.lock().unwrap().install_bundled();
+                })
+            {
+                log::warn!("could not spawn bundled-pack materialization: {error}");
+            }
+            (Some(library), Some(AudioEngine::spawn()))
+        }
+        None => {
+            log::warn!("no data directory available; audio disabled");
+            (None, None)
+        }
+    };
+
     let state = Arc::new(Mutex::new(AppState {
         settings,
         storage,
         status: String::new(),
         wake: None,
         debounce: std::cell::RefCell::new(SaveDebounce::new(Duration::from_millis(800))),
+        library,
+        engine,
     }));
 
     let (wake_tx, wake_rx) = mpsc::channel::<()>();
@@ -1426,6 +1498,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Catch-all exit flush (macOS Cmd+Q and any other loop exit): the
     // trailing debounced write must survive an abrupt exit mid-debounce.
     state.lock().unwrap().flush_save();
+    if let Some(engine) = &state.lock().unwrap().engine {
+        engine.shutdown();
+    }
     Ok(())
 }
 
@@ -1542,6 +1617,14 @@ mod tests {
             announce(&event, &riyadh(), &quiet_settings(), event.at).is_some(),
             "the athan is essential and bypasses quiet hours"
         );
+    }
+
+    #[test]
+    fn every_event_kind_maps_to_its_voice_event() {
+        assert_eq!(voice_event(EventKind::PreAlert), routing::EVENT_CHIME);
+        assert_eq!(voice_event(EventKind::Prayer), routing::EVENT_ATHAN);
+        assert_eq!(voice_event(EventKind::Iqamah), routing::EVENT_IQAMAH);
+        assert_eq!(voice_event(EventKind::AthkarWindow), routing::EVENT_ATHKAR);
     }
 
     #[test]

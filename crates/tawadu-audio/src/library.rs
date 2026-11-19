@@ -41,6 +41,16 @@ impl PackLibrary {
         &self.packs
     }
 
+    /// The library root (pack dirs live directly under it).
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// The render-cache root (one subdir per pack, deleted with the pack).
+    pub fn cache_root(&self) -> &Path {
+        &self.cache
+    }
+
     pub fn pack_dir(&self, id: &str) -> PathBuf {
         self.dir.join(id)
     }
