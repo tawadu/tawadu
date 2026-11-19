@@ -15,7 +15,8 @@
 > (Prism's design contract) · [`docs/architecture.md`](architecture.md) ·
 > `crates/tawadu-core/src/prayer.rs` · `adhan` 0.2 `calculation.rs`.
 >
-> Status: draft for review.
+> Status: **ACCEPTED by Atlas 2026-11-20 01:2x AST** (112 keys verified; F1 one-word
+> Arabic fix applied by Atlas — variance `[one]` دقيقة واحدة; §12 native flags carried).
 
 ---
 
@@ -300,7 +301,7 @@ phase5-mosque-minutes-unit =
     }
 phase5-highlat-variance =
     { $minutes ->
-        [one] قد تختلف المصادر بنحو دقيقة الواحدة. يمكنك ضبط أي صلاة أدناه.
+        [one] قد تختلف المصادر بنحو دقيقة واحدة. يمكنك ضبط أي صلاة أدناه.
         [two] قد تختلف المصادر بنحو دقيقتين. يمكنك ضبط أي صلاة أدناه.
         [few] قد تختلف المصادر بنحو { $minutes } دقائق. يمكنك ضبط أي صلاة أدناه.
         [many] قد تختلف المصادر بنحو { $minutes } دقيقةً. يمكنك ضبط أي صلاة أدناه.
