@@ -11,18 +11,18 @@
 | 0 core | DONE | 60 core tests, fixtures, polar/far-east cases |
 | 1 usable shell | DONE | settings write path verified end to end |
 | 2 notifications + tray | **DONE — merged PR #1 (3f0b578)** | 82 tests; CI ×3 green (run 44429295414); desktop exit test: close→hidden→pre-alert/athan/iqamah fire while hidden→restore+banner→Quit exit 0; Sentinel APPROVE; tray icon registered (NotifyIconSettings) |
-| Steps 2–3 (autostart + defects) | **PR #2 OPEN (01:07:29Z) — Forge still refining** | 4 slices pushed: ledger `84d3b97`, quiet-hours `ccf601b`, debounced save `d657034`, autostart `bb301ff`; uncommitted WIP in tawadu-step23 (wiring); GUI window 01:08–01:42 UTC announced in PR comments |
+| Steps 2–3 (autostart + defects) | **PR #2 — APPROVE in hand, merge imminent** | Head `5e1d43a` (01:57:47Z): 4 slices + Sentinel-findings fix `e670f70` + test fallback `505eb08` + snixembed SNI host on ubuntu `5e1d43a`. Sentinel APPROVE (01:51Z, both boundary verdicts). CI: `505eb08` ×3 green (run 44439767131); `5e1d43a` in flight (44440795375). Non-GUI gate independently verified (70 core + 34 app, fmt+clippy clean). Atlas full-lifecycle gate: window 02:10–02:25 UTC (may extend — overlaps Forge's 01:53–02:23 window) |
 | 3 audio | **PREP DONE — all 3 docs accepted** | strings `826a6ca`; proposal+sketch `6873a7f`; ledger `07ef5ec`; Sentinel licence audit 2026-11-19 passed with binding conditions (A1/A3/A4 live re-verify before any asset commit; PDM REJECT — no Tier B bundling) |
 | 4 athkar | queued | MIT Hisn al-Muslim corpus candidate |
 | 5–6 coverage/i18n/budgets/packaging | queued | RTL unverified = biggest UI unknown |
 
 ## Next actions (owner → action → done-when)
 
-1. **Forge** → Steps 2+3 on feat/step2-3-autostart-defects (PR #2 open 01:07:29Z, head `bb301ff`): finish ledger wiring + lifecycle RED/GREEN, run full gate, push. → CI ×3 green on final head, Sentinel approve.
+1. **Forge** → ~~ledger wiring + lifecycle~~ **DONE** (`14d250c`, `e670f70`); **now**: ubuntu CI real-SNI fix (snixembed+stalonetray, option a) + 'never announce stale prayers' doc + TOUCH-hook nit — pushed `5e1d43a`, GUI window 01:53–02:23 UTC. → CI ×3 green on final head.
 2. ~~**Scout** → docs/audio-sources.md~~ **DONE — `07ef5ec`**, Sentinel audit passed 2026-11-19 (conditions recorded below; A1/A3/A4 live-byte re-verify + download provenance are preconditions of the asset PR).
 3. ~~**Quill** → docs/audio-ui-strings.md~~ **DONE — `826a6ca`**: 68 AR/EN keys for audio settings (packs, per-event voice, trim, volume, shuffle/sequential), import errors, both empty states, and the credits page. Bilingual table, no mixed-script runs; Latin travels in `{ $… }` placeholders rendered as their own run. Consumed by Phase 3 and the Phase 6 Fluent catalogs.
 4. ~~**Prism** → audio settings UI proposal~~ **DONE — `6873a7f`** (proposal + interactive HTML sketch accepted; polish notes above are the visual gate).
-5. **Sentinel** → review Forge's PR when opened (ledger audit done 2026-11-19; binding conditions recorded above).
+5. **Sentinel** → ~~final review pass~~ **DONE — APPROVE in hand (01:51:24Z)**: both boundary verdicts correct; stale-prayer product rule confirmed (>120 s late = never announce); ubuntu CI triage with Atlas (option a = SNI host preferred).
 6. **Atlas** → gate + merge Steps 2–3; then dispatch Phase 3 implementation (tawadu-audio: rodio/symphonia mixer, pack format, trim/sequence/shuffle, rfd importer, per-event voice); tray pixel follow-up below.
 
 ## Conventions (binding)
@@ -66,7 +66,7 @@
 
 ## Open debt / follow-ups
 
-- **PR #2 gate + merge: Atlas personally, GUI window 02:10–02:25 UTC (announced in PR comments). Heartbeat: monitor only — do NOT gate/merge PR #2 or taskkill during Atlas's window.** After merge: delete rescue/team-main-20261119 + Atlas worktree, dispatch Phase 3 to Forge.
+- **PR #2 gate + merge: Atlas personally, GUI window 02:26–02:40 UTC (updated; after Forge's 01:55–02:25 reservation). Heartbeat: monitor only — do NOT gate/merge PR #2 or taskkill during Atlas's window.** After merge: delete rescue/team-main-20261119 + Atlas worktree, dispatch Phase 3 to Forge.
 
 - **Tray pixel check** (cosmetic): icon registration + full functional path verified; literal taskbar screenshot pending (taskbar auto-hidden during test; do it when naturally visible).
 - Restore-channel hardening (Windows DACL), zbus 5.19+6.3 lock duplication comment, restore-test listener leaks, restore-bind race window.
@@ -76,6 +76,7 @@
 
 ## Heartbeat log (latest first)
 
+- **2026-11-19 04:59 AST** — Monitor-only run (per `f424f40` + PR comment 01:46:45Z). Verified: head `5e1d43a` (snixembed SNI host + stale-prayer rule + TOUCH nit), CI 44440795375 in flight; `505eb08` already ×3 green (44439767131). Sentinel APPROVE in hand since 01:51Z. ubuntu root cause closed: CI xvfb has no StatusNotifier watcher → app correctly falls back KeepWindowShown (ADR 0002 cond. 4) → hard hide-assert panicked at tray_lifecycle.rs:492 (runs 44437829313, 44439110058); fixed by `505eb08` (test branches on tray availability) + `5e1d43a` (real SNI host so ubuntu exercises the real tray path). Parallel Atlas session owns gate+merge (tawadu-atlas worktree @ e670f70, non-GUI gate done; GUI window 02:10–02:25 UTC, extend if Forge's 01:53–02:23 window runs long). Next beat: if CI on `5e1d43a` ×3 green + Atlas gate done → confirm merge; else watch.
 - **2026-11-19 04:25 AST** — PR #2 open (4 slices), Forge mid-wiring (uncommitted WIP, log fresh). **CI anomaly:** pull_request event dropped — push 01:07:03Z + PR open 01:07:29Z raced; 18+ min, zero check suites on `bb301ff`. Fixed forward: `c0ee22f` adds `workflow_dispatch` to ci.yml (main; PR branch gains it on next rebase/merge). Forge's next push fires the normal pull_request event; if it doesn't, Atlas re-triggers manually. GUI window 01:08–01:42 UTC respected — no local GUI test before close. Sentinel: staged review (final pass after wiring) — watch for staleness next beat.
 
 ## Heartbeat (for scheduled sessions)
