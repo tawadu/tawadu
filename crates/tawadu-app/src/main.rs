@@ -660,7 +660,16 @@ fn spawn_scheduler(
                             title: title.clone(),
                             body: body.clone(),
                         });
-                        os_notify(&title, &body);
+                        // OS delivery must NEVER block the scheduler:
+                        // notify-rust's macOS backend waits for a click by
+                        // default (nsusernotifications.rs wait_for_click),
+                        // which froze the loop after the first alert on CI.
+                        // Toasts are secondary — the banner above is the
+                        // correctness floor. Events are rare; a thread per
+                        // toast costs nothing.
+                        std::thread::spawn(move || {
+                            os_notify(&title, &body);
+                        });
                     }
                 }
                 watermark = fired_at;

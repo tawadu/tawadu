@@ -315,62 +315,83 @@ fn tray_lifecycle() {
     // The regression Sentinel required: phases 1-2 would pass with the
     // notification engine dead. Scale 60 + a 1 s real slice keeps each wake
     // 60 debug-seconds ahead — inside the 120 s late tolerance. NOW 01:00Z =
-    // 04:00 Riyadh: pre-alert 01:39Z (~39 s real), athan 01:49Z (~49 s),
-    // iqamah 01:59Z (~59 s; Fajr offset 10 seeded below). The close lands at
+    // 04:00 Riyadh: pre-alert ~01:41Z (~41 s real), athan ~01:51Z (~51 s),
+    // iqamah ~02:01Z (~61 s; Fajr offset 10 seeded below). The close lands at
     // setup + 1.5 s, tens of seconds before the first alert even on slow CI.
-    let home = fresh_config_home();
-    let mut settings = tawadu_core::settings::Settings::default();
-    settings.iqamah.fajr = 10;
-    write_settings(&home, &settings);
-    let (mut alerting, log) = spawn_app_in(
-        &home,
-        &[
-            ("TAWADU_DEBUG_NOW", "2026-11-19T01:00:00Z"),
-            ("TAWADU_DEBUG_TIME_SCALE", "60"),
-            // 1 s real slice = 60 debug-seconds per wake, inside the 120 s
-            // late tolerance. Without it the default 60 s slice jumps 3600
-            // debug-seconds and drops every event (verified RED).
-            ("TAWADU_DEBUG_MAX_SLICE_MS", "1000"),
-            ("TAWADU_DEBUG_AUTOCLOSE_MS", "1500"),
-            ("TAWADU_DEBUG_BANNER_MS", "60000"),
-        ],
-    );
-    let tray_path = wait_for_either(
-        &log,
-        "hidden to tray",
-        "tray unavailable",
-        Duration::from_secs(30),
-    ) == Some(0);
-    #[cfg(windows)]
-    if tray_path {
-        assert!(
-            wait_for_visibility(false, Duration::from_secs(5)),
-            "window must be hidden before the alerts fire"
+    // One retry: on a shared desktop a teammate's second launch can signal
+    // the restore channel mid-phase, legitimately showing the window and
+    // clearing the hidden premise — detect that signature and rerun once.
+    let mut phase3_done = false;
+    for attempt in 0..2 {
+        let home = fresh_config_home();
+        let mut settings = tawadu_core::settings::Settings::default();
+        settings.iqamah.fajr = 10;
+        write_settings(&home, &settings);
+        let (mut alerting, log) = spawn_app_in(
+            &home,
+            &[
+                ("TAWADU_DEBUG_NOW", "2026-11-19T01:00:00Z"),
+                ("TAWADU_DEBUG_TIME_SCALE", "60"),
+                // 1 s real slice = 60 debug-seconds per wake, inside the 120 s
+                // late tolerance. Without it the default 60 s slice jumps 3600
+                // debug-seconds and drops every event (verified RED).
+                ("TAWADU_DEBUG_MAX_SLICE_MS", "1000"),
+                ("TAWADU_DEBUG_AUTOCLOSE_MS", "1500"),
+                ("TAWADU_DEBUG_BANNER_MS", "60000"),
+            ],
         );
-    }
-    for marker in ["firing pre_alert", "firing prayer", "firing iqamah"] {
-        assert!(
-            wait_for_log(&log, marker, Duration::from_secs(90)),
-            "alert did not fire while hidden: {marker}; logs:\n{}",
-            log.lock().unwrap()
-        );
-    }
-    if tray_path {
-        assert!(
-            wait_for_log(
+        let tray_path = wait_for_either(
+            &log,
+            "hidden to tray",
+            "tray unavailable",
+            Duration::from_secs(30),
+        ) == Some(0);
+        #[cfg(windows)]
+        if tray_path {
+            assert!(
+                wait_for_visibility(false, Duration::from_secs(5)),
+                "window must be hidden before the alerts fire"
+            );
+        }
+        for marker in ["firing pre_alert", "firing prayer", "firing iqamah"] {
+            assert!(
+                wait_for_log(&log, marker, Duration::from_secs(90)),
+                "alert did not fire while hidden: {marker}; logs:\n{}",
+                log.lock().unwrap()
+            );
+        }
+        if tray_path {
+            let restored = wait_for_log(
                 &log,
                 "restored window for alert banner",
-                Duration::from_secs(10)
-            ),
-            "the banner floor must restore + show the window for alerts; logs:\n{}",
-            log.lock().unwrap()
-        );
-        #[cfg(windows)]
-        assert!(
-            wait_for_visibility(true, Duration::from_secs(5)),
-            "restored window must actually be visible"
-        );
+                Duration::from_secs(10),
+            );
+            let interfered = log
+                .lock()
+                .unwrap()
+                .contains("restored window (second launch)");
+            if !restored && interfered && attempt == 0 {
+                // An external second launch showed the window mid-phase;
+                // the hidden premise was disturbed, not the banner floor.
+                let _ = alerting.kill();
+                let _ = alerting.wait();
+                continue;
+            }
+            assert!(
+                restored,
+                "the banner floor must restore + show the window for alerts; logs:\n{}",
+                log.lock().unwrap()
+            );
+            #[cfg(windows)]
+            assert!(
+                wait_for_visibility(true, Duration::from_secs(5)),
+                "restored window must actually be visible"
+            );
+        }
+        let _ = alerting.kill();
+        let _ = alerting.wait();
+        phase3_done = true;
+        break;
     }
-    let _ = alerting.kill();
-    let _ = alerting.wait();
+    assert!(phase3_done, "phase 3 did not complete");
 }
