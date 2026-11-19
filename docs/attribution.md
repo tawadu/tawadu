@@ -9,7 +9,7 @@ Tawadu's code is MIT. Everything bundled besides the code keeps its own licence.
 |---|---|---|---|
 | Ministry of Islamic Affairs (MoIA) | Adhan + athkar recordings | Permission via ministry contact | Cleared to use; keep the written/email record |
 | Wikimedia Commons | Adhan recordings (Makkah, Madinah, Malmö, …) | CC0 / CC BY 3.0 / CC BY-SA 4.0 | Usable with attribution |
-| `YousefAsalya/Islamic-Pro-azkar-API` | Hisn al-Muslim: 185 adhkar, AR/EN/TR, 267+ MP3s | MIT | Usable |
+| `YousefAsalya/Islamic-Pro-azkar-API` | Hisn al-Muslim TEXT: 132 categories / 267 items, AR/EN (pinned `d793023e`; per-file SHA-256 + `scripts/verify_athkar_corpus.py`; ledger `docs/athkar-corpus.md`) | MIT (`assets/licenses/azkar-api-mit.txt`) | **Bundled (Phase 4, text only)** — recitation MP3s NOT bundled (third-party performance rights, separate check) |
 | OpenDua dataset (Human Development Fund) | Adhkar text | CC BY 4.0 | Usable with attribution |
 | `Kiwifu/adhan-mp3` | 224 adhan MP3s | **no LICENSE file** | **Do not bundle** until licensed |
 | `assabile.com` | Adhan / athkar downloads | free downloads, no redistribution grant | Verify before bundling |
