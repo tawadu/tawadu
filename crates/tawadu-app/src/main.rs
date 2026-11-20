@@ -763,6 +763,11 @@ fn apply_credits(ui: &MainWindow, state: &AppState) {
             role: "Athkar text corpus (pinned d793023e)".into(),
         },
         CreditRow {
+            name: "GeoNames Gazetteer · cities1000".into(),
+            license: "CC BY 4.0".into(),
+            role: "City database (derived; geonames.org, Unxos GmbH)".into(),
+        },
+        CreditRow {
             name: "ksni".into(),
             license: "Unlicense".into(),
             role: "Linux StatusNotifier tray".into(),
