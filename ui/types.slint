@@ -97,6 +97,20 @@ export struct ContextChip {
 // ---- Phase 5 city picker (Prism §8; region-line is Rust-composed per the
 // "never compose factual strings in Slint" gotcha — admin1 code · IANA tz) ----
 
+// Phase 5 mosque profiles (Prism §8; offsets-summary Rust-composed).
+export struct MosqueProfile {
+    id: string,
+    name: string,
+    name-ar: string,
+    offsets-summary: string,
+    is-active: bool,
+    fajr: int,
+    dhuhr: int,
+    asr: int,
+    maghrib: int,
+    isha: int,
+}
+
 export struct CityResult {
     id: string,
     name: string,

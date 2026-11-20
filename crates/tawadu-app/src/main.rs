@@ -23,9 +23,10 @@ use tawadu_core::cities::{CityDb, CityHit};
 use tawadu_core::hijri::from_gregorian;
 use tawadu_core::locations::{find_city, Location, CITIES};
 use tawadu_core::locations::{push_recent, timezone_list, validate_coordinates};
+use tawadu_core::mosques::effective_iqamah;
 use tawadu_core::notify::{self, NotificationKind};
 use tawadu_core::prayer::{self, HighLatitudeRule, Madhab, Method, Prayer, PrayerTimes, Rounding};
-use tawadu_core::scheduler::{self, EventKind, IqamahOffsets, Timeline};
+use tawadu_core::scheduler::{self, EventKind, Timeline};
 use tawadu_core::settings::{AudioSettings, EventVoice, Language, PlaybackMode, Settings, Theme};
 use tawadu_core::storage::{LoadOutcome, Storage};
 
@@ -146,6 +147,11 @@ struct AppState {
     /// says so honestly and manual coordinates still work.
     city_db: Option<CityDb>,
     picker: std::cell::RefCell<PickerUi>,
+    /// Mosque profiles (Phase 5 v1: name + offsets; storage v4 is the
+    /// source of truth, this is the UI/scheduler cache).
+    mosques: Vec<tawadu_core::mosques::MosqueProfile>,
+    /// Two-step remove confirm: the id awaiting confirmation ("" = none).
+    mosque_confirm: std::cell::RefCell<String>,
 }
 
 /// Decode a serde snake_case key back into a config value.
@@ -307,15 +313,16 @@ fn countdown(to: chrono::DateTime<Utc>) -> String {
 /// athkar window at Isha+30, can fall after local midnight — and today's timeline
 /// does not contain them. That only happens at high latitude, which is exactly
 /// where the app promises not to invent or drop a time.
-fn day(location: &Location, settings: &Settings) -> (PrayerTimes, Timeline) {
+fn day(
+    location: &Location,
+    settings: &Settings,
+    mosques: &[tawadu_core::mosques::MosqueProfile],
+) -> (PrayerTimes, Timeline) {
     let date = location.local(now()).date_naive();
-    let iqamah = IqamahOffsets {
-        fajr: settings.iqamah.fajr,
-        dhuhr: settings.iqamah.dhuhr,
-        asr: settings.iqamah.asr,
-        maghrib: settings.iqamah.maghrib,
-        isha: settings.iqamah.isha,
-    };
+    // Phase 5: the ACTIVE mosque profile binds the scheduler offsets using
+    // the app's single location; no active profile -> legacy settings.iqamah
+    // (effective_iqamah never silently reassigns — core-tested).
+    let iqamah = effective_iqamah(settings, mosques);
 
     let times = prayer::compute(date, location.coordinates, &settings.config);
     let mut events = scheduler::build(times.clone(), &iqamah, settings.pre_alert_minutes).events;
@@ -349,7 +356,7 @@ fn next_prayer(
 /// Push the computed day into the home surface.
 fn apply_home(ui: &MainWindow, state: &AppState) {
     let location = state.location();
-    let (times, timeline) = day(&location, &state.settings);
+    let (times, timeline) = day(&location, &state.settings, &state.mosques);
     let next = next_prayer(&times, &location, &state.settings);
     let now = now();
 
@@ -388,6 +395,31 @@ fn apply_home(ui: &MainWindow, state: &AppState) {
         .map(|event| format!("{} · {}", event.label, hhmm(&location, event.at)))
         .unwrap_or_else(|| "Set your mosque's iqamah offsets".to_string());
     ui.set_next_iqamah(iqamah_text.into());
+    // Phase 5: active-mosque caption (Quill home-caption, Rust-composed).
+    let active = state
+        .settings
+        .active_mosque
+        .as_ref()
+        .and_then(|id| state.mosques.iter().find(|m| &m.id == id));
+    let (caption, caption_ar) = match active {
+        Some(m) => {
+            let name = if m.name.is_empty() {
+                "Mosque"
+            } else {
+                m.name.as_str()
+            };
+            let summary = m.offsets_summary();
+            let cap = if summary.is_empty() {
+                name.to_string()
+            } else {
+                format!("{name} · {summary}")
+            };
+            (cap, m.name_ar.clone())
+        }
+        None => (String::new(), String::new()),
+    };
+    ui.set_next_iqamah_caption(caption.into());
+    ui.set_next_iqamah_caption_ar(caption_ar.into());
 
     // Phase 4: the real athkar engine — context-aware card, honest progress.
     apply_athkar(ui, state, &location, &times);
@@ -690,6 +722,31 @@ fn apply_location(ui: &MainWindow, state: &mut AppState, loc: tawadu_core::locat
     apply_settings(ui, state);
 }
 
+fn mosques_model(state: &AppState) -> ModelRc<MosqueProfile> {
+    let rows: Vec<MosqueProfile> = state
+        .mosques
+        .iter()
+        .map(|m| MosqueProfile {
+            id: m.id.clone().into(),
+            name: m.name.clone().into(),
+            name_ar: m.name_ar.clone().into(),
+            offsets_summary: m.offsets_summary().into(),
+            is_active: state.settings.active_mosque.as_deref() == Some(m.id.as_str()),
+            fajr: m.offsets.fajr as i32,
+            dhuhr: m.offsets.dhuhr as i32,
+            asr: m.offsets.asr as i32,
+            maghrib: m.offsets.maghrib as i32,
+            isha: m.offsets.isha as i32,
+        })
+        .collect();
+    ModelRc::new(VecModel::from(rows))
+}
+
+fn refresh_mosques_ui(ui: &MainWindow, state: &AppState) {
+    ui.set_mosques(mosques_model(state));
+    ui.set_mosque_remove_confirm(state.mosque_confirm.borrow().clone().into());
+}
+
 fn apply_settings(ui: &MainWindow, state: &AppState) {
     let settings = &state.settings;
     let location = state.location();
@@ -709,6 +766,7 @@ fn apply_settings(ui: &MainWindow, state: &AppState) {
     ui.set_quiet_to(n.quiet_to.format("%H:%M").to_string().into());
     ui.set_location_query(location.name.clone().into());
     ui.set_settings_location_tz(state.settings.location.timezone.clone().into());
+    refresh_mosques_ui(ui, state);
     ui.set_city_results(ModelRc::new(VecModel::from(Vec::<CityRow>::new())));
 
     let (left, right) = method_rows();
@@ -1458,11 +1516,15 @@ fn spawn_scheduler(
             // several events from hiding all but the one it was waiting on.
             let mut watermark = now();
             loop {
-                let (location, settings) = {
+                let (location, settings, mosques) = {
                     let guard = state.lock().unwrap();
-                    (guard.location(), guard.settings.clone())
+                    (
+                        guard.location(),
+                        guard.settings.clone(),
+                        guard.mosques.clone(),
+                    )
                 };
-                let (_, timeline) = day(&location, &settings);
+                let (_, timeline) = day(&location, &settings, &mosques);
                 let next = timeline.next_after(watermark).cloned();
 
                 let wait = next
@@ -1658,6 +1720,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    let initial_mosques = storage
+        .as_ref()
+        .and_then(|s| s.load_mosques().ok())
+        .unwrap_or_default();
     let state = Arc::new(Mutex::new(AppState {
         settings,
         storage,
@@ -1693,6 +1759,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             results: Vec::new(),
             highlight: -1,
         }),
+        mosques: initial_mosques,
+        mosque_confirm: std::cell::RefCell::new(String::new()),
     }));
 
     let (wake_tx, wake_rx) = mpsc::channel::<()>();
@@ -1745,7 +1813,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let initial_target = {
         let guard = state.lock().unwrap();
         let location = guard.location();
-        let (times, _) = day(&location, &guard.settings);
+        let (times, _) = day(&location, &guard.settings, &guard.mosques);
         next_prayer(&times, &location, &guard.settings)
     };
     let initial_tooltip = match initial_target {
@@ -2097,6 +2165,202 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ui.set_manual_tz(zone.clone());
                 ui.set_manual_tz_query("".into());
                 ui.set_tz_results(ModelRc::new(VecModel::from(Vec::<OptionRow>::new())));
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_add_mosque(move || {
+            if let Some(ui) = weak.upgrade() {
+                let mut s = state.lock().unwrap();
+                let id = format!("m{}", now().timestamp_millis());
+                let m = tawadu_core::mosques::MosqueProfile::new(id.clone());
+                if let Some(storage) = &s.storage {
+                    if let Err(e) = storage.save_mosque(&m) {
+                        log::error!("mosque save failed: {e}");
+                    }
+                }
+                s.mosques.push(m);
+                *s.mosque_confirm.borrow_mut() = String::new();
+                ui.set_editing_mosque(id.into());
+                ui.set_mosque_name_hint(false);
+                refresh_mosques_ui(&ui, &s);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_activate_mosque(move |id| {
+            if let Some(ui) = weak.upgrade() {
+                let mut s = state.lock().unwrap();
+                if s.mosques.iter().any(|m| m.id == id.as_str()) {
+                    s.settings.active_mosque = Some(id.to_string());
+                    s.changed();
+                    if let Some(wake) = &s.wake {
+                        let _ = wake.send(());
+                    }
+                    apply_home(&ui, &s);
+                    refresh_mosques_ui(&ui, &s);
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_set_mosque_name(move |id, name| {
+            if let Some(ui) = weak.upgrade() {
+                let mut guard = state.lock().unwrap();
+                // Plain &mut AppState: MutexGuard deref would defeat the
+                // field-disjoint borrows (mosques mut + storage imm).
+                let s = &mut *guard;
+                let updated = {
+                    if let Some(m) = s.mosques.iter_mut().find(|m| m.id == id.as_str()) {
+                        m.name = name.to_string();
+                        if let Some(storage) = &s.storage {
+                            let _ = storage.save_mosque(m);
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if updated {
+                    s.changed();
+                    ui.set_mosque_name_hint(false);
+                    apply_home(&ui, s);
+                    refresh_mosques_ui(&ui, s);
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_set_mosque_name_ar(move |id, name| {
+            if let Some(ui) = weak.upgrade() {
+                let mut guard = state.lock().unwrap();
+                // Plain &mut AppState: MutexGuard deref would defeat the
+                // field-disjoint borrows (mosques mut + storage imm).
+                let s = &mut *guard;
+                let updated = {
+                    if let Some(m) = s.mosques.iter_mut().find(|m| m.id == id.as_str()) {
+                        m.name_ar = name.to_string();
+                        if let Some(storage) = &s.storage {
+                            let _ = storage.save_mosque(m);
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if updated {
+                    s.changed();
+                    apply_home(&ui, s);
+                    refresh_mosques_ui(&ui, s);
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_set_mosque_offset(move |id, prayer, value| {
+            if let Some(ui) = weak.upgrade() {
+                let mut guard = state.lock().unwrap();
+                // Plain &mut AppState: MutexGuard deref would defeat the
+                // field-disjoint borrows (mosques mut + storage imm).
+                let s = &mut *guard;
+                let value = value.clamp(0, 60) as i64;
+                let updated = {
+                    if let Some(m) = s.mosques.iter_mut().find(|m| m.id == id.as_str()) {
+                        match prayer.as_str() {
+                            "fajr" => m.offsets.fajr = value,
+                            "dhuhr" => m.offsets.dhuhr = value,
+                            "asr" => m.offsets.asr = value,
+                            "maghrib" => m.offsets.maghrib = value,
+                            "isha" => m.offsets.isha = value,
+                            _ => return,
+                        }
+                        if let Some(storage) = &s.storage {
+                            let _ = storage.save_mosque(m);
+                        }
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if updated {
+                    s.changed();
+                    if let Some(wake) = &s.wake {
+                        let _ = wake.send(());
+                    }
+                    apply_home(&ui, s);
+                    refresh_mosques_ui(&ui, s);
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_remove_mosque(move |id| {
+            if let Some(ui) = weak.upgrade() {
+                let mut s = state.lock().unwrap();
+                let confirming = s.mosque_confirm.borrow().clone();
+                if confirming != id.as_str() {
+                    // First click: arm the two-step confirm (Prism §4).
+                    *s.mosque_confirm.borrow_mut() = id.to_string();
+                    refresh_mosques_ui(&ui, &s);
+                    return;
+                }
+                // Second click: remove. Active profile -> NO active mosque
+                // (honest fallback, never a silent reassignment).
+                if let Some(storage) = &s.storage {
+                    let _ = storage.delete_mosque(id.as_str());
+                }
+                s.mosques.retain(|m| m.id != id.as_str());
+                if s.settings.active_mosque.as_deref() == Some(id.as_str()) {
+                    s.settings.active_mosque = None;
+                    s.status = "Mosque removed — no active mosque.".into();
+                }
+                *s.mosque_confirm.borrow_mut() = String::new();
+                if ui.get_editing_mosque().as_str() == id.as_str() {
+                    ui.set_editing_mosque("".into());
+                }
+                s.changed();
+                if let Some(wake) = &s.wake {
+                    let _ = wake.send(());
+                }
+                apply_home(&ui, &s);
+                apply_settings(&ui, &s);
+                refresh_mosques_ui(&ui, &s);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_done_editing(move || {
+            if let Some(ui) = weak.upgrade() {
+                let s = state.lock().unwrap();
+                let editing = ui.get_editing_mosque().to_string();
+                let unnamed = s
+                    .mosques
+                    .iter()
+                    .find(|m| m.id == editing)
+                    .map(|m| m.name.trim().is_empty())
+                    .unwrap_or(false);
+                if unnamed {
+                    // Name required: keep the editor open with the inline
+                    // hint — never a silent "Mosque 2" (Quill).
+                    ui.set_mosque_name_hint(true);
+                } else {
+                    ui.set_editing_mosque("".into());
+                    ui.set_mosque_name_hint(false);
+                }
             }
         });
     }
@@ -3254,6 +3518,8 @@ mod tests {
                 results: Vec::new(),
                 highlight: -1,
             }),
+            mosques: Vec::new(),
+            mosque_confirm: std::cell::RefCell::new(String::new()),
             athkar: std::cell::RefCell::new(AthkarUi {
                 ctx,
                 loaded_ctx: Some(ctx),

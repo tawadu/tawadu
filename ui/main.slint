@@ -9,7 +9,7 @@
 //  - Arabic and Latin never share one `text:` string. The bidi algorithm then
 //    reorders the runs and the words come out of line. Each run gets its own Text.
 
-import { AthkarItemView, CityResult, CityRow, ContextChip, CreditPack, CreditRow, EventVoiceRow, MethodRow, OptionRow, PackRow, Row, VoiceOption } from "types.slint";
+import { AthkarItemView, CityResult, CityRow, ContextChip, CreditPack, CreditRow, EventVoiceRow, MethodRow, MosqueProfile, OptionRow, PackRow, Row, VoiceOption } from "types.slint";
 
 // Design tokens — Plaster theme. Declared here (not in an imported file) so the
 // Rust side can reach the global and switch themes at runtime.
@@ -574,6 +574,13 @@ export component MainWindow inherits Window {
     in property <string> next_name_ar;
     in property <string> countdown;
     in property <string> next_iqamah;
+    in property <string> next_iqamah_caption;
+    in property <string> next_iqamah_caption_ar;
+    // ---- Phase 5 mosques (Prism §4, Quill §4.2) ----
+    in property <[MosqueProfile]> mosques;
+    in-out property <string> editing_mosque;
+    in property <string> mosque_remove_confirm;
+    in property <bool> mosque_name_hint;
     in property <string> athkar_text;
     in property <string> athkar_label;
     in property <string> athkar_progress;
@@ -682,6 +689,13 @@ export component MainWindow inherits Window {
     callback apply-coords(string, string, string, string);
     callback search-tz(string);
     callback pick-tz(string);
+    callback add-mosque();
+    callback activate-mosque(string);
+    callback set-mosque-name(string, string);
+    callback set-mosque-name-ar(string, string);
+    callback set-mosque-offset(string, string, int);
+    callback remove-mosque(string);
+    callback done-editing();
     callback set-method(string);
     callback set-madhab(string);
     callback set-high-latitude(string);
@@ -851,6 +865,17 @@ export component MainWindow inherits Window {
                             font-weight: 600;
                             color: Palette.ink;
                         }
+                        if (next_iqamah_caption != "") : Text {
+                            text: next_iqamah_caption;
+                            font-size: 11px;
+                            color: Palette.ink-muted;
+                        }
+                        if (next_iqamah_caption_ar != "") : Text {
+                            text: next_iqamah_caption_ar;
+                            font-size: 11px;
+                            color: Palette.ink-muted;
+                            horizontal-alignment: end;
+                        }
                     }
                 }
 
@@ -979,6 +1004,104 @@ export component MainWindow inherits Window {
                             primary: false;
                             triggered => { open-city-picker(); }
                         }
+                    }
+                }
+
+                Rectangle {
+                    background: Palette.surface;
+                    border-color: Palette.border;
+                    border-width: 1px;
+                    border-radius: Palette.radius;
+                    Section { title: "MOSQUES"; title-ar: "المساجد";
+                        if (mosques.length == 0) : VerticalLayout {
+                            spacing: 6px;
+                            Text { text: "No mosque profiles yet"; font-size: 14px; font-weight: 600; color: Palette.ink; }
+                            Text { text: "Add your mosque to get iqamah times."; font-size: 12px; color: Palette.ink-muted; }
+                        }
+                        for m in mosques : Rectangle {
+                            background: m.is-active ? Palette.accent-soft : Palette.surface;
+                            border-color: m.is-active ? Palette.accent : Palette.border;
+                            border-width: 1px;
+                            border-radius: Palette.radius-small;
+                            VerticalLayout {
+                                padding: 10px;
+                                spacing: 6px;
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text { text: m.name == "" ? "Mosque" : m.name; font-size: 14px; font-weight: 600; color: Palette.ink; }
+                                    if (m.name-ar != "") : Text {
+                                        text: m.name-ar;
+                                        font-size: 13px;
+                                        color: Palette.ink-muted;
+                                        horizontal-alignment: end;
+                                    }
+                                    if (m.is-active) : Rectangle {
+                                        height: 20px;
+                                        width: active-badge.preferred-width + 12px;
+                                        border-radius: 10px;
+                                        background: Palette.accent;
+                                        active-badge := Text { text: "Active"; font-size: 10px; color: Palette.accent-ink; horizontal-alignment: center; vertical-alignment: center; }
+                                    }
+                                }
+                                Text {
+                                    text: m.offsets-summary == "" ? "No offsets set" : m.offsets-summary;
+                                    font-size: 11px;
+                                    color: Palette.ink-muted;
+                                }
+                                if (editing_mosque != m.id) : HorizontalLayout {
+                                    spacing: 8px;
+                                    Action { label: "Edit"; primary: false; triggered => { editing_mosque = m.id; } }
+                                    if (mosque_remove_confirm == m.id) : Action {
+                                        label: "Confirm remove";
+                                        primary: true;
+                                        triggered => { remove-mosque(m.id); }
+                                    }
+                                    if (mosque_remove_confirm != m.id) : Action {
+                                        label: "Remove";
+                                        primary: false;
+                                        triggered => { remove-mosque(m.id); }
+                                    }
+                                }
+                                if (editing_mosque == m.id) : VerticalLayout {
+                                    spacing: 6px;
+                                    TextInput {
+                                        width: 240px;
+                                        height: 30px;
+                                        text: m.name;
+                                        font-size: 13px;
+                                        color: Palette.ink;
+                                        edited => { set-mosque-name(m.id, self.text); }
+                                    }
+                                    if (mosque_name_hint && m.name == "") : Text {
+                                        text: "Enter a name to save.";
+                                        font-size: 11px;
+                                        color: Palette.danger;
+                                    }
+                                    TextInput {
+                                        width: 240px;
+                                        height: 30px;
+                                        text: m.name-ar;
+                                        font-size: 13px;
+                                        color: Palette.ink;
+                                        edited => { set-mosque-name-ar(m.id, self.text); }
+                                    }
+                                    Stepper { label: "Fajr"; label-ar: "الفجر"; value: m.fajr; step: 1; min-value: 0; max-value: 60; changed(v) => { set-mosque-offset(m.id, "fajr", v); } }
+                                    Stepper { label: "Dhuhr"; label-ar: "الظهر"; value: m.dhuhr; step: 1; min-value: 0; max-value: 60; changed(v) => { set-mosque-offset(m.id, "dhuhr", v); } }
+                                    Stepper { label: "Asr"; label-ar: "العصر"; value: m.asr; step: 1; min-value: 0; max-value: 60; changed(v) => { set-mosque-offset(m.id, "asr", v); } }
+                                    Stepper { label: "Maghrib"; label-ar: "المغرب"; value: m.maghrib; step: 1; min-value: 0; max-value: 60; changed(v) => { set-mosque-offset(m.id, "maghrib", v); } }
+                                    Stepper { label: "Isha"; label-ar: "العشاء"; value: m.isha; step: 1; min-value: 0; max-value: 60; changed(v) => { set-mosque-offset(m.id, "isha", v); } }
+                                    Action { label: "Done"; primary: true; triggered => { done-editing(); } }
+                                }
+                            }
+                            TouchArea {
+                                clicked => {
+                                    if (!m.is-active && editing_mosque != m.id) {
+                                        activate-mosque(m.id);
+                                    }
+                                }
+                            }
+                        }
+                        Action { label: "+ Add mosque"; primary: mosques.length == 0; triggered => { add-mosque(); } }
                     }
                 }
 
