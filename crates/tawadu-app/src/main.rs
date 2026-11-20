@@ -163,6 +163,13 @@ struct AppState {
     mosques: Vec<tawadu_core::mosques::MosqueProfile>,
     /// Two-step remove confirm: the id awaiting confirmation ("" = none).
     mosque_confirm: std::cell::RefCell<String>,
+    /// N11: deferred mosque writes. The in-memory edit is immediate; the
+    /// SQLite write waits for a pause (800 ms, drained on the 200 ms tick) or
+    /// an explicit flush, so typing does not commit a transaction per
+    /// keystroke. The write DECISION still lives in `persist_mosque_edit`, so
+    /// the F4 invariants hold whenever the flush happens.
+    mosque_debounce: std::cell::RefCell<SaveDebounce>,
+    mosque_write_pending: std::cell::RefCell<Vec<String>>,
     /// N7: 0 = no confirm card, 1 = turn-on confirm, 2 = turn-off confirm.
     /// The mode is applied only after the user confirms (Prism §6.2).
     ramadan_confirm: std::cell::RefCell<u8>,
@@ -926,6 +933,8 @@ fn discard_unnamed_mosque(state: &mut AppState, id: &str) {
         // name was later emptied — unnamed never stays persisted.
         let _ = storage.delete_mosque(id);
     }
+    // N11: the draft is gone, so a deferred write for it is moot.
+    state.mosque_write_pending.borrow_mut().retain(|x| x != id);
     state.mosques.retain(|m| m.id != id);
     if state.settings.active_mosque.as_deref() == Some(id) {
         state.settings.active_mosque = None;
@@ -961,7 +970,7 @@ fn persist_mosque_edit(state: &mut AppState, id: &str) {
 fn set_mosque_name(state: &mut AppState, id: &str, name: &str) -> bool {
     if let Some(m) = state.mosques.iter_mut().find(|m| m.id == id) {
         m.name = name.to_string();
-        persist_mosque_edit(state, id);
+        schedule_mosque_write(state, id);
         true
     } else {
         false
@@ -974,7 +983,7 @@ fn set_mosque_name(state: &mut AppState, id: &str, name: &str) -> bool {
 fn set_mosque_name_ar(state: &mut AppState, id: &str, name: &str) -> bool {
     if let Some(m) = state.mosques.iter_mut().find(|m| m.id == id) {
         m.name_ar = name.to_string();
-        persist_mosque_edit(state, id);
+        schedule_mosque_write(state, id);
         true
     } else {
         false
@@ -993,10 +1002,43 @@ fn set_mosque_offset(state: &mut AppState, id: &str, prayer: &str, value: i64) -
             "isha" => m.offsets.isha = value.clamp(0, 60),
             _ => return false,
         }
-        persist_mosque_edit(state, id);
+        schedule_mosque_write(state, id);
         true
     } else {
         false
+    }
+}
+
+/// N11: an edit landed — (re)start the write pause and remember the profile.
+/// Only the timing moves; `persist_mosque_edit` still decides named-vs-unnamed
+/// at flush time, so a draft whose name was typed and then emptied within one
+/// pause is never created.
+fn schedule_mosque_write(state: &mut AppState, id: &str) {
+    state.mosque_debounce.borrow_mut().touch(Instant::now());
+    let mut pending = state.mosque_write_pending.borrow_mut();
+    if !pending.iter().any(|x| x == id) {
+        pending.push(id.to_string());
+    }
+}
+
+/// N11: write out every pending profile immediately — the explicit flush
+/// points (Done / profile switch / quit / remove). Ignores the pause window.
+fn flush_mosque_writes(state: &mut AppState) {
+    state.mosque_debounce.borrow_mut().cancel();
+    let ids: Vec<String> = state.mosque_write_pending.borrow_mut().drain(..).collect();
+    for id in ids {
+        persist_mosque_edit(state, &id);
+    }
+}
+
+/// N11: the tick's debounced flush — writes only once the pause elapsed.
+fn flush_mosque_writes_if_due(state: &mut AppState) {
+    if state
+        .mosque_debounce
+        .borrow_mut()
+        .take_if_due(Instant::now())
+    {
+        flush_mosque_writes(state);
     }
 }
 
@@ -1004,6 +1046,9 @@ fn set_mosque_offset(state: &mut AppState, id: &str, prayer: &str, value: i64) -
 /// UNNAMED draft — Add never orphans an in-flight draft. Named profiles
 /// are untouched (they already persisted).
 fn begin_mosque_draft(state: &mut AppState, current_editing: &str) -> String {
+    // N11: an edit on the profile we are leaving must not be lost to the
+    // write pause — flush before the switch.
+    flush_mosque_writes(state);
     if !current_editing.is_empty() {
         discard_unnamed_mosque(state, current_editing);
     }
@@ -1840,6 +1885,9 @@ impl AppState {
     /// Flush a pending debounced save immediately (quit / hide / exit), so
     /// the trailing write survives an abrupt exit mid-debounce.
     fn flush_save(&mut self) {
+        // N11: a pending mosque write is flushed unconditionally here — this
+        // is the quit/hide path, so the pause must not gate it.
+        flush_mosque_writes(self);
         if self.debounce.borrow_mut().flush() {
             self.save();
         }
@@ -2292,6 +2340,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         status: String::new(),
         wake: None,
         debounce: std::cell::RefCell::new(SaveDebounce::new(Duration::from_millis(800))),
+        mosque_debounce: std::cell::RefCell::new(SaveDebounce::new(Duration::from_millis(800))),
+        mosque_write_pending: std::cell::RefCell::new(Vec::new()),
         library,
         engine,
         corpus: match Corpus::bundled() {
@@ -3187,6 +3237,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     refresh_mosques_ui(&ui, &s);
                     return;
                 }
+                // N11: a pending write for the profile being removed must not
+                // resurrect it later — drop it, then let the rest flush.
+                s.mosque_write_pending
+                    .borrow_mut()
+                    .retain(|x| x != id.as_str());
+                flush_mosque_writes(&mut s);
                 // Second click: remove. Active profile -> NO active mosque
                 // (honest fallback, never a silent reassignment).
                 if let Some(storage) = &s.storage {
@@ -3446,6 +3502,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             return;
         };
         let mut state = save_state.lock().unwrap();
+        // N11: deferred mosque writes ride the same tick.
+        flush_mosque_writes_if_due(&mut state);
         if state.debounce.borrow_mut().take_if_due(Instant::now()) {
             state.save();
             // Status feedback ONLY: a full apply_settings here could clobber
@@ -4449,6 +4507,7 @@ mod tests {
             s.mosques.iter().any(|m| m.id == id && m.offsets.fajr == 15),
             "the edit is live in memory"
         );
+        flush_mosque_writes(&mut s);
         assert!(
             s.storage
                 .as_ref()
@@ -4477,6 +4536,7 @@ mod tests {
                 .any(|m| m.id == id && m.name_ar == "مسجد النور"),
             "the edit is live in memory"
         );
+        flush_mosque_writes(&mut s);
         assert!(
             s.storage
                 .as_ref()
@@ -4497,6 +4557,7 @@ mod tests {
         assert!(set_mosque_name(&mut s, &id, "Al-Noor"));
         assert!(set_mosque_name_ar(&mut s, &id, "مسجد النور"));
         assert!(set_mosque_offset(&mut s, &id, "fajr", 15));
+        flush_mosque_writes(&mut s);
         let rows = s.storage.as_ref().unwrap().load_mosques().unwrap();
         assert_eq!(rows.len(), 1, "named profile persists");
         assert_eq!(rows[0].name, "Al-Noor");
@@ -4511,8 +4572,10 @@ mod tests {
         let mut s = athkar_fixture("2026-11-19", Context::Morning, false);
         let id = add_mosque_draft(&mut s);
         assert!(set_mosque_name(&mut s, &id, "Al-Noor"));
+        flush_mosque_writes(&mut s);
         assert_eq!(s.storage.as_ref().unwrap().load_mosques().unwrap().len(), 1);
         assert!(set_mosque_name(&mut s, &id, ""));
+        flush_mosque_writes(&mut s);
         assert!(
             s.storage
                 .as_ref()
@@ -4580,6 +4643,7 @@ mod tests {
             s.mosques[0].name_ar.is_empty(),
             "the survivor is FRESH — the marked old draft was discarded"
         );
+        flush_mosque_writes(&mut s);
         assert!(s
             .storage
             .as_ref()
@@ -4604,7 +4668,62 @@ mod tests {
             s.mosques.iter().any(|m| m.id == b && !m.is_named()),
             "a fresh unnamed draft is live"
         );
+        flush_mosque_writes(&mut s);
         assert_eq!(s.storage.as_ref().unwrap().load_mosques().unwrap().len(), 1);
+    }
+
+    // ---- N11: writes are debounced, decisions are not ----
+
+    #[test]
+    fn mosque_edits_are_debounced_not_per_keystroke() {
+        // N11: the edit is live in memory immediately, but three edits inside
+        // one pause must produce ONE write, not three.
+        let mut s = athkar_fixture("2026-11-19", Context::Morning, false);
+        let id = add_mosque_draft(&mut s);
+        assert!(set_mosque_name(&mut s, &id, "Al-Noor"));
+        assert!(set_mosque_name(&mut s, &id, "Al-Noor Al-Jadeed"));
+        assert!(set_mosque_offset(&mut s, &id, "fajr", 15));
+        assert!(
+            s.mosques
+                .iter()
+                .any(|m| m.id == id && m.name == "Al-Noor Al-Jadeed" && m.offsets.fajr == 15),
+            "every edit is live in memory immediately"
+        );
+        assert!(
+            s.storage
+                .as_ref()
+                .unwrap()
+                .load_mosques()
+                .unwrap()
+                .is_empty(),
+            "three edits in one pause commit nothing"
+        );
+        flush_mosque_writes(&mut s);
+        let rows = s.storage.as_ref().unwrap().load_mosques().unwrap();
+        assert_eq!(rows.len(), 1, "the pause flushes exactly one row");
+        assert_eq!(rows[0].name, "Al-Noor Al-Jadeed");
+        assert_eq!(rows[0].offsets.fajr, 15);
+    }
+
+    #[test]
+    fn a_name_typed_then_emptied_within_the_pause_is_never_created() {
+        // N11: `persist_mosque_edit` still DECIDES at flush time, so the F4
+        // invariant survives the debounce — an edit that ends unnamed leaves
+        // no row behind.
+        let mut s = athkar_fixture("2026-11-19", Context::Morning, false);
+        let id = add_mosque_draft(&mut s);
+        assert!(set_mosque_name(&mut s, &id, "Al-Noor"));
+        assert!(set_mosque_name(&mut s, &id, ""));
+        flush_mosque_writes(&mut s);
+        assert!(
+            s.storage
+                .as_ref()
+                .unwrap()
+                .load_mosques()
+                .unwrap()
+                .is_empty(),
+            "unnamed never persists, even through a deferred write"
+        );
     }
 
     /// An AppState with the real bundled corpus + an in-memory store, parked
@@ -4616,6 +4735,8 @@ mod tests {
             status: String::new(),
             wake: None,
             debounce: std::cell::RefCell::new(SaveDebounce::new(Duration::from_millis(800))),
+            mosque_debounce: std::cell::RefCell::new(SaveDebounce::new(Duration::from_millis(800))),
+            mosque_write_pending: std::cell::RefCell::new(Vec::new()),
             library: None,
             engine: None,
             corpus: Some(Corpus::bundled().unwrap()),
