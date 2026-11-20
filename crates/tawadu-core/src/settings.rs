@@ -160,6 +160,11 @@ pub struct Settings {
     /// the CHOSEN LOCATION PRESERVED — never a wholesale defaults fallback.
     #[serde(default)]
     pub recent_cities: Vec<StoredLocation>,
+    /// Phase 5: the active mosque profile id (None = no active mosque;
+    /// legacy settings.iqamah applies). `serde(default)` so pre-Phase-5
+    /// blobs upgrade with NO active mosque — never a silent assignment.
+    #[serde(default)]
+    pub active_mosque: Option<String>,
 }
 
 impl Default for Settings {
@@ -184,6 +189,7 @@ impl Default for Settings {
             notifications: NotificationSettings::default(),
             audio: AudioSettings::default(),
             recent_cities: Vec::new(),
+            active_mosque: None,
         }
     }
 }
@@ -197,10 +203,15 @@ mod tests {
         let mut blob = serde_json::to_value(Settings::default()).unwrap();
         let obj = blob.as_object_mut().unwrap();
         obj.remove("recent_cities");
+        obj.remove("active_mosque");
         obj["location"]["name"] = serde_json::json!("Oslo");
         let upgraded: Settings = serde_json::from_value(blob).unwrap();
         assert_eq!(upgraded.location.name, "Oslo", "chosen city preserved");
         assert!(upgraded.recent_cities.is_empty());
+        assert!(
+            upgraded.active_mosque.is_none(),
+            "no silent mosque assignment"
+        );
     }
 
     #[test]

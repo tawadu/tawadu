@@ -455,7 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_databases_migrate_to_v3_with_data_intact() {
+    fn v2_databases_migrate_to_current_with_data_intact() {
         let dir = std::env::temp_dir().join(format!("tawadu-athkar-mig-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.db");
@@ -470,7 +470,10 @@ mod tests {
             ).unwrap();
         }
         let storage = Storage::open(&path).unwrap();
-        assert_eq!(storage.schema_version().unwrap(), 3);
+        assert_eq!(
+            storage.schema_version().unwrap(),
+            crate::storage::SCHEMA_VERSION
+        );
         assert!(storage
             .has_fired(
                 "prayer",

@@ -9,7 +9,7 @@ use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
 
 /// Current schema version. Bump on every migration.
-pub const SCHEMA_VERSION: i32 = 3;
+pub const SCHEMA_VERSION: i32 = 4;
 
 /// The result of loading settings, with every case kept distinct.
 ///
@@ -109,6 +109,16 @@ impl Storage {
                  day TEXT NOT NULL,
                  done INTEGER NOT NULL,
                  PRIMARY KEY (context, category, item, day)
+             );
+             CREATE TABLE IF NOT EXISTS mosque_profiles (
+                 id TEXT PRIMARY KEY,
+                 name TEXT NOT NULL,
+                 name_ar TEXT NOT NULL,
+                 fajr INTEGER NOT NULL,
+                 dhuhr INTEGER NOT NULL,
+                 asr INTEGER NOT NULL,
+                 maghrib INTEGER NOT NULL,
+                 isha INTEGER NOT NULL
              );",
         )?;
         self.conn.execute(
@@ -227,6 +237,67 @@ impl Storage {
             "DELETE FROM athkar_progress WHERE context = ?1 AND day = ?2",
             params![context, day],
         )?;
+        Ok(())
+    }
+
+    /// Upsert a mosque profile (Phase 5 v1: name + five offsets ONLY —
+    /// per-profile location is deferred by Atlas decision; no location
+    /// column until the per-profile-timeline engine decision lands).
+    pub fn save_mosque(&self, m: &crate::mosques::MosqueProfile) -> Result<(), rusqlite::Error> {
+        self.conn.execute(
+            "INSERT INTO mosque_profiles (id, name, name_ar, fajr, dhuhr, asr, maghrib, isha)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET
+                 name = excluded.name, name_ar = excluded.name_ar,
+                 fajr = excluded.fajr, dhuhr = excluded.dhuhr, asr = excluded.asr,
+                 maghrib = excluded.maghrib, isha = excluded.isha",
+            params![
+                m.id,
+                m.name,
+                m.name_ar,
+                m.offsets.fajr,
+                m.offsets.dhuhr,
+                m.offsets.asr,
+                m.offsets.maghrib,
+                m.offsets.isha
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// All mosque profiles, insertion-stable by id.
+    pub fn load_mosques(&self) -> Result<Vec<crate::mosques::MosqueProfile>, rusqlite::Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, name_ar, fajr, dhuhr, asr, maghrib, isha
+             FROM mosque_profiles ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(crate::mosques::MosqueProfile {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                name_ar: r.get(2)?,
+                offsets: crate::scheduler::IqamahOffsets {
+                    fajr: r.get(3)?,
+                    dhuhr: r.get(4)?,
+                    asr: r.get(5)?,
+                    maghrib: r.get(6)?,
+                    isha: r.get(7)?,
+                },
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Delete a profile. If it was active, the caller clears
+    /// settings.active_mosque — the app falls back to NO active mosque,
+    /// never a silent reassignment (Prism §4).
+    pub fn delete_mosque(&self, id: &str) -> Result<(), rusqlite::Error> {
+        self.conn
+            .execute("DELETE FROM mosque_profiles WHERE id = ?1", params![id])?;
         Ok(())
     }
 

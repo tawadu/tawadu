@@ -12,6 +12,7 @@ pub mod athkar;
 pub mod cities;
 pub mod hijri;
 pub mod locations;
+pub mod mosques;
 pub mod notify;
 pub mod prayer;
 pub mod qibla;
