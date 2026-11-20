@@ -38,7 +38,7 @@ it beautiful and widely available.
 | 6 | Strings are hardcoded in `.slint` | No real i18n; RTL unverified |
 | 7 | 28 cities, no search, no GPS | Most users cannot set their town |
 | ~~8~~ | ~~Storage errors swallowed with `.ok()`~~ | **Done** — `LoadOutcome` separates fresh / corrupt / failed, and the UI says so |
-| 9 | Performance budgets unmeasured | We cannot claim the numbers in the plan |
+| 9 | Performance budgets unmeasured | We cannot claim the numbers in the plan — **partly closed:** the two UI-thread budgets (city search, mosque writes) are measured with targets in [`phase6-performance-budgets.md`](phase6-performance-budgets.md); idle CPU, memory, cold start and athan latency remain open |
 | 10 | No packaging | Nothing to hand to a non-developer |
 
 ---
@@ -167,7 +167,10 @@ user in Tromsø in June is told the truth rather than shown a fabricated sunrise
 2. Fonts: Amiri for scripture, IBM Plex Sans Arabic for UI; licence entries.
 3. Ship the theme system (Plaster / Ink / Ramadan) as user-selectable skins.
 4. Measure the budgets: idle CPU ≈ 0 %, memory < 120 MB, cold start < 1.5 s,
-   athan latency < 300 ms. Enforce with a benchmark, not a claim.
+   athan latency < 300 ms. Enforce with a benchmark, not a claim. The two
+   UI-thread costs Phase 5 routed here (city search, mosque writes) now have
+   measured baselines and targets — see
+   [`phase6-performance-budgets.md`](phase6-performance-budgets.md).
 5. Packaging: Windows installer, macOS `.app`, Linux AppImage/deb. Code-signing is a
    later, separately-funded decision.
 6. A first-run experience and an in-app about/licences page.
