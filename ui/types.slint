@@ -18,6 +18,9 @@ export struct CalendarDay {
     in-month: bool,
     is-today: bool,
     is-ramadan: bool,
+    /// N8: false outside the published Umm al-Qura table (1343–1500 AH) —
+    /// the Hijri number is then a tabular fallback, so the cell says so.
+    in-table: bool,
 }
 
 export struct DayTime {
@@ -133,6 +136,10 @@ export struct MosqueProfile {
     name-ar: string,
     offsets-summary: string,
     is-active: bool,
+    /// n-b: true when the profile has no real name (empty OR whitespace) —
+    /// the same predicate that gates persistence and activation (`is_named`),
+    /// so the "Enter a name to save" hint can never disagree with the gate.
+    name-empty: bool,
     fajr: int,
     dhuhr: int,
     asr: int,

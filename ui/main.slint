@@ -570,7 +570,7 @@ component DayCell inherits Rectangle {
     border-color: day.is-today ? Palette.accent : Palette.border;
     border-width: day.is-today ? 2px : 1px;
     border-radius: Palette.radius-small;
-    opacity: day.in-month ? 1.0 : 0.5;
+    opacity: (day.in-month ? 1.0 : 0.5) * (day.in-table ? 1.0 : 0.55);
     VerticalLayout {
         padding: 4px;
         spacing: 0px;
@@ -654,6 +654,10 @@ export component MainWindow inherits Window {
     in property <bool> gps_confirm_visible;
     in property <string> gps_lat;
     in property <string> gps_lon;
+    // N9: the confirm body is composed in Rust (Prism §8 — never compose a
+    // factual string in Slint); lat/lon stay separate values for the manual
+    // fields.
+    in property <string> gps_confirm_body;
     in property <bool> picker_db_available;
     in-out property <bool> coords_open;
     in-out property <string> manual_lat;
@@ -1236,7 +1240,7 @@ export component MainWindow inherits Window {
                                         color: Palette.ink;
                                         edited => { set-mosque-name(m.id, self.text); }
                                     }
-                                    if (m.name == "") : Text {
+                                    if (m.name-empty) : Text {
                                         text: "Enter a name to save.";
                                         font-size: 11px;
                                         color: Palette.danger;
@@ -1979,14 +1983,20 @@ export component MainWindow inherits Window {
                         padding: 10px;
                         spacing: 2px;
                         Text { text: "Use my location"; font-size: 13px; font-weight: 600; color: Palette.ink; }
-                        Text {
+                        if (gps_available) : Text {
                             text: "Read once, stays on this device. Nothing leaves this device.";
                             font-size: 11px;
                             color: Palette.ink-muted;
                             wrap: word-wrap;
                         }
+                        if (!gps_available) : Text {
+                            text: "Location is unavailable on this device — enter coordinates manually.";
+                            font-size: 11px;
+                            color: Palette.ink-muted;
+                            wrap: word-wrap;
+                        }
                     }
-                    TouchArea { clicked => { if (!gps_busy) { use-gps(); } } }
+                    if (gps_available) : TouchArea { clicked => { if (!gps_busy) { use-gps(); } } }
                 }
                 if (gps_confirm_visible) : Rectangle {
                     background: Palette.surface-secondary;
@@ -1998,7 +2008,7 @@ export component MainWindow inherits Window {
                         spacing: 6px;
                         Text { text: "Use these coordinates?"; font-size: 14px; font-weight: 600; color: Palette.ink; }
                         Text {
-                            text: "Latitude " + gps_lat + ", longitude " + gps_lon + ". This becomes your location.";
+                            text: gps_confirm_body;
                             font-size: 12px;
                             color: Palette.ink;
                             wrap: word-wrap;

@@ -958,6 +958,7 @@ fn mosques_model(state: &AppState) -> ModelRc<MosqueProfile> {
             name_ar: m.name_ar.clone().into(),
             offsets_summary: m.offsets_summary().into(),
             is_active: state.settings.active_mosque.as_deref() == Some(m.id.as_str()),
+            name_empty: !m.is_named(),
             fajr: m.offsets.fajr as i32,
             dhuhr: m.offsets.dhuhr as i32,
             asr: m.offsets.asr as i32,
@@ -993,10 +994,20 @@ fn build_calendar(ui: &MainWindow, state: &AppState, location: &tawadu_core::loc
             in_month: d.month() == first.month() && d.year() == first.year(),
             is_today: d == today,
             is_ramadan: h.map(|x| x.is_ramadan()).unwrap_or(false),
+            in_table: h.map(|x| x.in_table()).unwrap_or(false),
         });
     }
     ui.set_calendar_days(ModelRc::new(VecModel::from(days)));
-    ui.set_calendar_month_label(first.format("%B %Y").to_string().into());
+    // N8: month names come from the engine's own table (Quill §7 single
+    // source), never from a second copy in the app.
+    ui.set_calendar_month_label(
+        format!(
+            "{} {}",
+            tawadu_core::hijri::gregorian_month_name_en(first),
+            first.format("%Y")
+        )
+        .into(),
+    );
     let mid_h = from_gregorian(first + chrono::Duration::days(14));
     ui.set_calendar_month_label_ar(
         mid_h
@@ -1005,26 +1016,44 @@ fn build_calendar(ui: &MainWindow, state: &AppState, location: &tawadu_core::loc
             .into(),
     );
 
-    // Engine bounds: the published table's first/last Gregorian days.
-    let bound_first = HijriDate::new(TABLE_FIRST_YEAR, 1, 1)
-        .and_then(|h| h.to_gregorian())
-        .unwrap_or_else(|| NaiveDate::from_ymd_opt(1924, 7, 31).unwrap());
-    let bound_last = HijriDate::new(TABLE_LAST_YEAR, 12, 1)
-        .map(|h| {
-            let len = i64::from(h.month_len());
-            h.to_gregorian()
-                .map(|g| g + chrono::Duration::days(len - 1))
-                .unwrap_or_else(|| NaiveDate::from_ymd_opt(2077, 12, 31).unwrap())
-        })
-        .unwrap_or_else(|| NaiveDate::from_ymd_opt(2077, 12, 31).unwrap());
-    let prev_enabled = first > bound_first.with_day(1).unwrap_or(bound_first);
-    let next_enabled = first < bound_last.with_day(1).unwrap_or(bound_last);
+    // Engine bounds: the published table's first/last Gregorian days. If the
+    // engine cannot supply them, fail soft — disable both directions rather
+    // than invent a bound (Quill §2.6: no typed-in dates).
+    let bound_first = HijriDate::new(TABLE_FIRST_YEAR, 1, 1).and_then(|h| h.to_gregorian());
+    let bound_last = HijriDate::new(TABLE_LAST_YEAR, 12, 1).and_then(|h| {
+        let len = i64::from(h.month_len());
+        h.to_gregorian()
+            .map(|g| g + chrono::Duration::days(len - 1))
+    });
+    let (prev_enabled, next_enabled) = match (bound_first, bound_last) {
+        (Some(f), Some(l)) => (
+            first > f.with_day(1).unwrap_or(f),
+            first < l.with_day(1).unwrap_or(l),
+        ),
+        _ => (false, false),
+    };
     ui.set_calendar_prev_enabled(prev_enabled);
     ui.set_calendar_next_enabled(next_enabled);
     let note = if !next_enabled {
-        format!("Dates unavailable beyond {}", bound_last.format("%B %Y"))
+        bound_last
+            .map(|l| {
+                format!(
+                    "Dates unavailable beyond {} {}",
+                    tawadu_core::hijri::gregorian_month_name_en(l),
+                    l.format("%Y")
+                )
+            })
+            .unwrap_or_default()
     } else if !prev_enabled {
-        format!("Dates unavailable before {}", bound_first.format("%B %Y"))
+        bound_first
+            .map(|f| {
+                format!(
+                    "Dates unavailable before {} {}",
+                    tawadu_core::hijri::gregorian_month_name_en(f),
+                    f.format("%Y")
+                )
+            })
+            .unwrap_or_default()
     } else {
         String::new()
     };
@@ -2740,6 +2769,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ui.set_gps_busy(false);
                     match fix {
                         gps::GpsFix::Found { lat, lon } => {
+                            // N9: the factual sentence is composed in Rust
+                            // (Prism §8 — never compose factual strings in
+                            // Slint); the UI places it verbatim.
+                            ui.set_gps_confirm_body(
+                                format!(
+                                    "Latitude {lat:.4}, longitude {lon:.4}. This becomes your location."
+                                )
+                                .into(),
+                            );
                             ui.set_gps_lat(format!("{lat:.4}").into());
                             ui.set_gps_lon(format!("{lon:.4}").into());
                             ui.set_gps_confirm_visible(true);

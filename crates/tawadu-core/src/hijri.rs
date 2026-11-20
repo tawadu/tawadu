@@ -101,6 +101,14 @@ pub fn from_gregorian(date: NaiveDate) -> Option<HijriDate> {
     Some(HijriDate { year, month, day })
 }
 
+/// English Gregorian month name from the SAME engine table the Hijri names
+/// come from (Quill §7 single source — the app must not format `%B` itself).
+pub fn gregorian_month_name_en(date: NaiveDate) -> &'static str {
+    Gregorian::new(date.year(), date.month() as u8, date.day() as u8)
+        .map(|g| g.month_name())
+        .unwrap_or("")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,6 +149,13 @@ mod tests {
         assert_eq!(HijriDate::new(1445, 9, 1).unwrap().month_len(), 30);
         let len = HijriDate::new(1448, 6, 1).unwrap().month_len();
         assert!(len == 29 || len == 30, "Hijri months are 29 or 30 days");
+    }
+
+    #[test]
+    fn gregorian_month_name_comes_from_the_engine() {
+        // N8: single source — the app renders this, never chrono's `%B`.
+        assert_eq!(gregorian_month_name_en(date(2027, 6, 1)), "June");
+        assert_eq!(gregorian_month_name_en(date(2026, 11, 17)), "November");
     }
 
     #[test]
