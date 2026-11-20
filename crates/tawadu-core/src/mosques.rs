@@ -34,6 +34,12 @@ impl MosqueProfile {
         }
     }
 
+    /// F4: a profile is NAMED only with a real user-given name — the gate
+    /// for persistence and activation. Whitespace is not a name.
+    pub fn is_named(&self) -> bool {
+        !self.name.trim().is_empty()
+    }
+
     /// Rust-composed caption (Prism: only non-zero offsets; the UI places
     /// it, never composes it). "" when all zero — the UI shows Quill's
     /// "No offsets set" string instead.
@@ -82,6 +88,17 @@ mod tests {
         let m = profile("m1", 15, 10);
         assert_eq!(m.offsets_summary(), "Fajr +15 · Dhuhr +10");
         assert_eq!(MosqueProfile::new("m0".into()).offsets_summary(), "");
+    }
+
+    #[test]
+    fn unnamed_profiles_are_not_named() {
+        // F4: activation + persistence gate on a REAL user-given name.
+        let mut m = MosqueProfile::new("x".into());
+        assert!(!m.is_named());
+        m.name = "   ".into();
+        assert!(!m.is_named(), "whitespace is not a name");
+        m.name = "Al-Noor".into();
+        assert!(m.is_named());
     }
 
     #[test]

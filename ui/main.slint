@@ -624,6 +624,8 @@ export component MainWindow inherits Window {
     in-out property <string> editing_mosque;
     in property <string> mosque_remove_confirm;
     in property <bool> mosque_name_hint;
+    in property <string> mosque_remove_body;
+    in property <bool> mosque_remove_active;
     in property <string> athkar_text;
     in property <string> athkar_label;
     in property <string> athkar_progress;
@@ -770,6 +772,8 @@ export component MainWindow inherits Window {
     callback set-mosque-name-ar(string, string);
     callback set-mosque-offset(string, string, int);
     callback remove-mosque(string);
+    callback edit-mosque(string);
+    callback cancel-mosque-remove();
     callback done-editing();
     callback set-high-lat(string);
     callback set-fine-tune(string, int);
@@ -1175,7 +1179,7 @@ export component MainWindow inherits Window {
                                 spacing: 6px;
                                 HorizontalLayout {
                                     spacing: 8px;
-                                    Text { text: m.name == "" ? "Mosque" : m.name; font-size: 14px; font-weight: 600; color: Palette.ink; }
+                                    Text { text: m.name; font-size: 14px; font-weight: 600; color: Palette.ink; }
                                     if (m.name-ar != "") : Text {
                                         text: m.name-ar;
                                         font-size: 13px;
@@ -1195,22 +1199,29 @@ export component MainWindow inherits Window {
                                     font-size: 11px;
                                     color: Palette.ink-muted;
                                 }
-                                if (editing_mosque != m.id) : HorizontalLayout {
+                                if (editing_mosque != m.id && mosque_remove_confirm != m.id) : HorizontalLayout {
                                     spacing: 8px;
-                                    Action { label: "Edit"; primary: false; triggered => { editing_mosque = m.id; } }
-                                    if (mosque_remove_confirm == m.id) : Action {
-                                        label: "Confirm remove";
-                                        primary: true;
-                                        triggered => { remove-mosque(m.id); }
+                                    Action { label: "Edit"; primary: false; triggered => { edit-mosque(m.id); } }
+                                    Action { label: "Remove"; primary: false; triggered => { remove-mosque(m.id); } }
+                                }
+                                if (mosque_remove_confirm == m.id) : VerticalLayout {
+                                    spacing: 6px;
+                                    Text { text: "Remove this mosque?"; font-size: 13px; font-weight: 600; color: Palette.ink; }
+                                    Text { text: mosque_remove_body; font-size: 12px; color: Palette.ink; wrap: word-wrap; }
+                                    if (mosque_remove_active) : Text {
+                                        text: "This is the active mosque.";
+                                        font-size: 11px;
+                                        color: Palette.ink-muted;
                                     }
-                                    if (mosque_remove_confirm != m.id) : Action {
-                                        label: "Remove";
-                                        primary: false;
-                                        triggered => { remove-mosque(m.id); }
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Action { label: "Remove"; primary: true; triggered => { remove-mosque(m.id); } }
+                                        Action { label: "Cancel"; primary: false; triggered => { cancel-mosque-remove(); } }
                                     }
                                 }
                                 if (editing_mosque == m.id) : VerticalLayout {
                                     spacing: 6px;
+                                    Text { text: "Mosque name"; font-size: 12px; color: Palette.ink-muted; }
                                     TextInput {
                                         width: 240px;
                                         height: 30px;
@@ -1219,11 +1230,12 @@ export component MainWindow inherits Window {
                                         color: Palette.ink;
                                         edited => { set-mosque-name(m.id, self.text); }
                                     }
-                                    if (mosque_name_hint && m.name == "") : Text {
+                                    if (m.name == "") : Text {
                                         text: "Enter a name to save.";
                                         font-size: 11px;
                                         color: Palette.danger;
                                     }
+                                    Text { text: "Arabic name (optional)"; font-size: 12px; color: Palette.ink-muted; }
                                     TextInput {
                                         width: 240px;
                                         height: 30px;
@@ -1232,6 +1244,7 @@ export component MainWindow inherits Window {
                                         color: Palette.ink;
                                         edited => { set-mosque-name-ar(m.id, self.text); }
                                     }
+                                    Text { text: "Iqamah offsets (minutes after the athan)"; font-size: 12px; color: Palette.ink-muted; wrap: word-wrap; }
                                     Stepper { label: "Fajr"; label-ar: "الفجر"; value: m.fajr; step: 1; min-value: 0; max-value: 60; changed(v) => { set-mosque-offset(m.id, "fajr", v); } }
                                     Stepper { label: "Dhuhr"; label-ar: "الظهر"; value: m.dhuhr; step: 1; min-value: 0; max-value: 60; changed(v) => { set-mosque-offset(m.id, "dhuhr", v); } }
                                     Stepper { label: "Asr"; label-ar: "العصر"; value: m.asr; step: 1; min-value: 0; max-value: 60; changed(v) => { set-mosque-offset(m.id, "asr", v); } }
@@ -1680,8 +1693,8 @@ export component MainWindow inherits Window {
                     HorizontalLayout {
                         padding: 12px;
                         spacing: 12px;
-                        Text { text: "Ramadan Mubarak"; font-size: 14px; font-weight: 600; color: Palette.ink; vertical-alignment: center; }
-                        Text { text: "رمضان مبارك"; font-size: 14px; color: Palette.ink; vertical-alignment: center; }
+                        Text { text: "Ramadan"; font-size: 14px; font-weight: 600; color: Palette.ink; vertical-alignment: center; }
+                        Text { text: "رمضان"; font-size: 14px; color: Palette.ink; vertical-alignment: center; }
                         Rectangle { }
                         Action { label: "Turn on Ramadan mode"; primary: true; triggered => { set-ramadan-mode(true); } }
                     }
@@ -1694,7 +1707,7 @@ export component MainWindow inherits Window {
                         spacing: 12px;
                         Text { text: "Ramadan has ended — turn off mode?"; font-size: 13px; color: Palette.ink; vertical-alignment: center; }
                         Rectangle { }
-                        Action { label: "Turn off"; primary: false; triggered => { set-ramadan-mode(false); } }
+                        Action { label: "Turn off Ramadan mode"; primary: false; triggered => { set-ramadan-mode(false); } }
                     }
                 }
                 HorizontalLayout {

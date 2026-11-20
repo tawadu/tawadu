@@ -414,11 +414,9 @@ fn apply_home(ui: &MainWindow, state: &AppState) {
         .and_then(|id| state.mosques.iter().find(|m| &m.id == id));
     let (caption, caption_ar) = match active {
         Some(m) => {
-            let name = if m.name.is_empty() {
-                "Mosque"
-            } else {
-                m.name.as_str()
-            };
+            // F4: activation is name-gated — the active profile always has
+            // a real user-given name; no fabricated fallback.
+            let name = m.name.as_str();
             let summary = m.offsets_summary();
             let cap = if summary.is_empty() {
                 name.to_string()
@@ -799,6 +797,38 @@ fn apply_location(ui: &MainWindow, state: &mut AppState, loc: tawadu_core::locat
     }
     apply_home(ui, state);
     apply_settings(ui, state);
+}
+
+/// F4: Add creates an in-memory DRAFT only — nothing touches storage until
+/// the user gives a name (create-on-first-name). Dismissing an unnamed
+/// draft discards it; a named profile is never discarded by this path.
+fn add_mosque_draft(state: &mut AppState) -> String {
+    let id = format!("m{}", now().timestamp_millis());
+    state
+        .mosques
+        .push(tawadu_core::mosques::MosqueProfile::new(id.clone()));
+    id
+}
+
+fn discard_unnamed_mosque(state: &mut AppState, id: &str) {
+    let unnamed = state
+        .mosques
+        .iter()
+        .find(|m| m.id == id)
+        .map(|m| !m.is_named())
+        .unwrap_or(false);
+    if !unnamed {
+        return;
+    }
+    if let Some(storage) = &state.storage {
+        // No-op if the draft was never saved; also cleans a profile whose
+        // name was later emptied — unnamed never stays persisted.
+        let _ = storage.delete_mosque(id);
+    }
+    state.mosques.retain(|m| m.id != id);
+    if state.settings.active_mosque.as_deref() == Some(id) {
+        state.settings.active_mosque = None;
+    }
 }
 
 fn mosques_model(state: &AppState) -> ModelRc<MosqueProfile> {
@@ -2720,14 +2750,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_add_mosque(move || {
             if let Some(ui) = weak.upgrade() {
                 let mut s = state.lock().unwrap();
-                let id = format!("m{}", now().timestamp_millis());
-                let m = tawadu_core::mosques::MosqueProfile::new(id.clone());
-                if let Some(storage) = &s.storage {
-                    if let Err(e) = storage.save_mosque(&m) {
-                        log::error!("mosque save failed: {e}");
-                    }
-                }
-                s.mosques.push(m);
+                // F4: draft only — persistence waits for a real name.
+                let id = add_mosque_draft(&mut s);
                 *s.mosque_confirm.borrow_mut() = String::new();
                 ui.set_editing_mosque(id.into());
                 ui.set_mosque_name_hint(false);
@@ -2738,10 +2762,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let weak = ui.as_weak();
         let state = Arc::clone(&state);
+        ui.on_edit_mosque(move |id| {
+            if let Some(ui) = weak.upgrade() {
+                let mut s = state.lock().unwrap();
+                // F4: switching away from an unnamed draft discards it.
+                let current = ui.get_editing_mosque().to_string();
+                if !current.is_empty() && current != id.as_str() {
+                    discard_unnamed_mosque(&mut s, &current);
+                    s.changed();
+                }
+                ui.set_editing_mosque(id.clone());
+                ui.set_mosque_name_hint(false);
+                refresh_mosques_ui(&ui, &s);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_cancel_mosque_remove(move || {
+            if let Some(ui) = weak.upgrade() {
+                let s = state.lock().unwrap();
+                *s.mosque_confirm.borrow_mut() = String::new();
+                refresh_mosques_ui(&ui, &s);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
         ui.on_activate_mosque(move |id| {
             if let Some(ui) = weak.upgrade() {
                 let mut s = state.lock().unwrap();
-                if s.mosques.iter().any(|m| m.id == id.as_str()) {
+                if s.mosques
+                    .iter()
+                    .any(|m| m.id == id.as_str() && m.is_named())
+                {
                     s.settings.active_mosque = Some(id.to_string());
                     s.changed();
                     if let Some(wake) = &s.wake {
@@ -2766,7 +2822,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     if let Some(m) = s.mosques.iter_mut().find(|m| m.id == id.as_str()) {
                         m.name = name.to_string();
                         if let Some(storage) = &s.storage {
-                            let _ = storage.save_mosque(m);
+                            if m.is_named() {
+                                // Create-on-first-name (F4).
+                                let _ = storage.save_mosque(m);
+                            } else {
+                                // Emptied again: unnamed never stays persisted.
+                                let _ = storage.delete_mosque(&m.id);
+                            }
                         }
                         true
                     } else {
@@ -2857,8 +2919,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut s = state.lock().unwrap();
                 let confirming = s.mosque_confirm.borrow().clone();
                 if confirming != id.as_str() {
-                    // First click: arm the two-step confirm (Prism §4).
+                    // First click: arm the two-step confirm (Prism §4) with
+                    // the Quill remove copy — the consequence is VISIBLE at
+                    // confirm time (N4), never a silent reassignment.
                     *s.mosque_confirm.borrow_mut() = id.to_string();
+                    let name = s
+                        .mosques
+                        .iter()
+                        .find(|m| m.id == id.as_str())
+                        .map(|m| m.name.clone())
+                        .unwrap_or_default();
+                    ui.set_mosque_remove_body(
+                        format!("\u{201C}{name}\u{201D} will be removed. The app will use no active mosque.").into(),
+                    );
+                    ui.set_mosque_remove_active(
+                        s.settings.active_mosque.as_deref() == Some(id.as_str()),
+                    );
                     refresh_mosques_ui(&ui, &s);
                     return;
                 }
@@ -2900,9 +2976,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|m| m.name.trim().is_empty())
                     .unwrap_or(false);
                 if unnamed {
-                    // Name required: keep the editor open with the inline
-                    // hint — never a silent "Mosque 2" (Quill).
-                    ui.set_mosque_name_hint(true);
+                    // Name required (Prism §4): Done on an unnamed draft
+                    // DISCARDS it — nothing unnamed persists, no fabricated
+                    // "Mosque" name (F4). The hint flashes via the row.
+                    drop(s);
+                    let mut s = state.lock().unwrap();
+                    discard_unnamed_mosque(&mut s, &editing);
+                    s.changed();
+                    ui.set_editing_mosque("".into());
+                    ui.set_mosque_name_hint(false);
+                    refresh_mosques_ui(&ui, &s);
                 } else {
                     ui.set_editing_mosque("".into());
                     ui.set_mosque_name_hint(false);
@@ -4045,6 +4128,48 @@ mod tests {
     }
 
     // ---- athkar tick refresh (Sentinel F1: idle boundary-cross + day rollover) ----
+
+    // ---- F4 (Sentinel): unnamed mosque drafts never persist ----
+
+    #[test]
+    fn add_then_dismiss_leaves_no_persisted_unnamed_profile() {
+        let mut s = athkar_fixture("2026-11-19", Context::Morning, false);
+        let id = add_mosque_draft(&mut s);
+        assert_eq!(s.mosques.len(), 1, "draft visible for editing");
+        assert!(
+            s.storage
+                .as_ref()
+                .unwrap()
+                .load_mosques()
+                .unwrap()
+                .is_empty(),
+            "unnamed draft must NOT be persisted"
+        );
+        discard_unnamed_mosque(&mut s, &id);
+        assert!(s.mosques.is_empty(), "dismiss discards the draft");
+        assert!(s
+            .storage
+            .as_ref()
+            .unwrap()
+            .load_mosques()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn named_profile_persists_and_survives_dismiss() {
+        let mut s = athkar_fixture("2026-11-19", Context::Morning, false);
+        let id = add_mosque_draft(&mut s);
+        if let Some(m) = s.mosques.iter_mut().find(|m| m.id == id) {
+            m.name = "Al-Noor".into();
+            if let Some(storage) = &s.storage {
+                storage.save_mosque(m).unwrap();
+            }
+        }
+        discard_unnamed_mosque(&mut s, &id);
+        assert_eq!(s.mosques.len(), 1, "named profile stays");
+        assert_eq!(s.storage.as_ref().unwrap().load_mosques().unwrap().len(), 1);
+    }
 
     /// An AppState with the real bundled corpus + an in-memory store, parked
     /// at a known context/day — the wiring-level fixture for the tick refresh.
