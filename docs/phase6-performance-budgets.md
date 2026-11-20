@@ -16,11 +16,21 @@ how the budget gets enforced.
 | B2 | memory | < 120 MB | not measured |
 | B3 | cold start | < 1.5 s | not measured |
 | B4 | athan latency | < 300 ms | not measured |
-| **B5** | **city search on the UI thread** | **p95 < 16 ms, no visible hitch** | **baseline measured (§2)** |
-| **B6** | **mosque profile writes** | **no commit per keystroke; ≤ 1 write per pause** | **baseline measured (§3)** |
+| **B5** | **city search on the UI thread** | **p95 < 16 ms, no visible hitch** | **closed — PR #10** |
+| **B6** | **mosque profile writes** | **no commit per keystroke; ≤ 1 write per pause** | **closed — PR #11** |
 
 B1–B4 are Phase 6 task 4's original list and are still open. B5/B6 are the two
-costs Phase 5 found; they are the only budgets with a measured baseline today.
+costs Phase 5 found; both now have a measured baseline and a merged fix.
+
+- **B5 → PR #10** (`07b87cc`): literal LIKE escaping, one `IN (…)` per 500-id
+  chunk instead of one query per id, and the whole search moved to a
+  `city-search` worker thread. The broad-query cost fell hard (`al` 17.8 →
+  1.3 ms) and the residual ~70 ms substring scan no longer runs on the UI
+  thread.
+- **B6 → PR #11**: the three setters mutate memory immediately and the write
+  waits for an 800 ms pause (drained on the 200 ms tick), with unconditional
+  flushes at quit / profile switch / remove. `persist_mosque_edit` still
+  decides at flush time, so the F4 invariants are untouched.
 
 ---
 
@@ -74,15 +84,19 @@ The per-id lookup loop alone, for a sparse query yielding 572 ids:
 
 ### Design
 
-- **(a) Escape the substring pattern.** Escape `%`, `_` and the escape character
-  in the fallback and add an `ESCAPE '\'` clause. Keeps Prism §3's
-  prefix + substring behaviour; a unit test pins `%`, `_` and `\` as literals.
-  *Correctness first.*
-- **(b) Collapse the N+1.** One `IN (…)` query, chunked at 500 ids to stay under
-  SQLite's host-parameter limit. ~20× on the lookup.
-- **(c) Move the search off the UI thread.** Run `CityDb::search` on a worker
-  and post the hits back; keep the 150 ms debounce as-is. This is the only step
-  that needs a threading decision, so it lands after (a) and (b).
+Implemented in **PR #10** (`07b87cc`):
+
+- **(a) Escape the substring pattern.** ✅ `like_literal()` escapes `%`, `_`
+  and the escape character; the fallback carries `ESCAPE '\'`. A unit test
+  pins `%`, `_` and `\` as literals. Prism §3's prefix + substring behaviour
+  is unchanged.
+- **(b) Collapse the N+1.** ✅ one `IN (…)` per 500-id chunk through a shared
+  `hit_from_row` mapper (which also de-duplicates `by_id`). Measured 16.3 ms →
+  0.8 ms at 572 ids.
+- **(c) Move the search off the UI thread.** ✅ `CitySearchWorker` owns a
+  private read-only connection on a `city-search` thread; queries and results
+  carry a sequence number so a slow older search can never overwrite a newer
+  one. The 150 ms debounce is unchanged.
 
 ---
 
@@ -123,24 +137,31 @@ Commit-per-keystroke is ~**225×** more expensive than one commit per pause.
 
 ### Design
 
-- **Debounce the persist, not the edit.** The in-memory mutation stays immediate
-  (the field and the list keep up with typing); the *write* moves to a pause —
-  the same idiom the settings surface already uses (800 ms after the last
-  mutation, drained on the UI tick), plus an immediate flush on Done / blur /
-  profile switch.
-- **Keep the decision in `persist_mosque_edit`.** Only *when* it runs changes, so
-  the F4 invariants are untouched: unnamed never persists, create-on-first-name,
-  discard-on-dismiss, activation keyed on the EN name. That is exactly why the
-  single gate was worth building.
-- **Add `PRAGMA journal_mode=WAL` + `synchronous=NORMAL` at open.** Residual
-  drops to ~1.6 ms and the fsync pair disappears. Independent and low-risk; can
-  land on its own.
+Implemented in **PR #11**:
+
+- **Debounce the persist, not the edit.** ✅ The in-memory mutation stays
+  immediate; the *write* waits for an 800 ms pause (the settings surface's
+  window) drained on the existing 200 ms tick, plus an unconditional flush at
+  quit/hide, profile switch, and just before a remove.
+- **Keep the decision in `persist_mosque_edit`.** ✅ Only *when* it runs
+  changes, so the F4 invariants are untouched: unnamed never persists,
+  create-on-first-name, discard-on-dismiss, activation keyed on the EN name.
+  Because the gate re-reads `is_named()` at flush time, a name typed and then
+  emptied inside one pause is never created — pinned by a test. That is exactly
+  why the single gate was worth building.
+- **`PRAGMA journal_mode=WAL` + `synchronous=NORMAL` — measured, not taken.**
+  It drops the residual from 4.9 ms to 1.6 ms per commit, but with the
+  per-keystroke commit gone there is one commit per pause, where 1.6 ms is
+  invisible; it also creates `-wal`/`-shm` files beside the user's DB. Recorded
+  here so the omission is a decision, not an oversight.
 
 ---
 
 ## 4. Enforcing
 
-ROADMAP task 4 requires a benchmark, not a claim. Concretely:
+ROADMAP task 4 requires a benchmark, not a claim. **Still owed:** B5 and B6 are
+closed by the fixes above rather than by an assertion, and the harness that
+would stop them regressing has not been built. Concretely, when it is:
 
 - a benchmark that runs the real `CityDb::search` over a fixed query set
   (including `%`, `_`, an Arabic name, an empty query) against the **bundled**
@@ -148,7 +169,7 @@ ROADMAP task 4 requires a benchmark, not a claim. Concretely:
 - a write-burst test that types a 20-character name and asserts **≤ 1** commit
   per pause, plus the F4 invariants (no row for an unnamed draft).
 
-Both belong with the B1–B4 harness; this document only fixes the targets.
+Both belong with the B1–B4 harness.
 
 ---
 
