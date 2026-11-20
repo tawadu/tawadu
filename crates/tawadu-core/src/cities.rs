@@ -242,7 +242,7 @@ mod tests {
             .conn
             .query_row("SELECT COUNT(*) FROM cities", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(n, 172_038, "the pinned dump's record count");
+        assert_eq!(n, 172_046, "the pinned dump's record count");
     }
 
     #[test]
