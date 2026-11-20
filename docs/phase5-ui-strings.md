@@ -17,6 +17,14 @@
 >
 > Status: **ACCEPTED by Atlas 2026-11-20 01:2x AST** (112 keys verified; F1 one-word
 > Arabic fix applied by Atlas — variance `[one]` دقيقة واحدة; §12 native flags carried).
+>
+> **N6 catalog pass: 2026-11-20** — 14 keys added (deviation-4 / F1 / F2 per-event
+> strip sentences, notification prefixes, timezone-picker placeholder, status and
+> bound lines) and the two polar explain bodies re-pointed at the composed
+> per-event sentences. Total 112 → **126**. Source: Sentinel N6 (PR #5 verdict
+> comment 7034283246) + `crates/tawadu-core/src/prayer.rs::explain_strip` and
+> `crates/tawadu-app/src/main.rs` **as shipped**. AR coverage gap (18/111 values
+> rendered) recorded in §10; new AR wording flagged for native review in §12.
 
 ---
 
@@ -126,6 +134,7 @@ tokens arrive as `{ $… }` placeholders.
 | `phase5-city-selected-message` | Location set to { $name }. | تم تعيين الموقع: { $name }. | current-location confirmation |
 | `phase5-city-attribution-label` | City data: | بيانات المدن: | label only |
 | `phase5-city-attribution-credit` | { $credit } | { $credit } | pass-through from `assets/licenses/geonames-cities1000-cc-by-4.0.txt` |
+| `phase5-city-tz-search-placeholder` | Search IANA timezones | ابحث عن منطقة زمنية | timezone-picker search box; the AR cell avoids the Latin acronym (rule 1) |
 
 ### 4.2 Mosque profiles
 
@@ -154,6 +163,7 @@ tokens arrive as `{ $… }` placeholders.
 | `phase5-mosque-done` | Done | إتمام | collapses the editor |
 | `phase5-mosque-home-caption` | { $name } · { $offsets } | { $name } · { $offsets } | home NEXT IQAMAH caption; both values are precomposed runs |
 | `phase5-mosque-home-empty` | Set your mosque's iqamah offsets | اضبط فروق إقامة مسجدك | evolves the current honest empty state |
+| `phase5-mosque-removed-status` | Mosque removed — no active mosque. | أُزيل المسجد — لا يوجد مسجد مفعّل. | status line after removing the active profile; never a silent reassignment |
 
 ### 4.3 High-latitude honesty
 
@@ -176,8 +186,8 @@ only when the sun never reaches the twilight angle.
 | `phase5-highlat-estimated` | Estimated | مُقدَّر | muted caption on a rule-produced time |
 | `phase5-highlat-explain-title-day` | Midnight sun in { $city } | شمس منتصف الليل في { $city } | polar day |
 | `phase5-highlat-explain-title-night` | Polar night in { $city } | الليل القطبي في { $city } | polar night |
-| `phase5-highlat-explain-body-day` | { $city } is inside the polar circle. At this time of year the sun never sets, so there is no sunrise or sunset to compute. Fajr and Isha are estimated using { $rule }. | يقع { $city } داخل الدائرة القطبية. في هذا الوقت من العام لا تغيب الشمس أبداً، فلا يوجد شروق أو غروب يُحسب. يُقدَّر الفجر والعشاء باستخدام { $rule }. | omit any fact the engine cannot supply |
-| `phase5-highlat-explain-body-night` | { $city } is inside the polar circle. At this time of year the sun never rises, so there is no sunrise or sunset to compute. Fajr and Isha are estimated using { $rule }. | يقع { $city } داخل الدائرة القطبية. في هذا الوقت من العام لا تشرق الشمس أبداً، فلا يوجد شروق أو غروب يُحسب. يُقدَّر الفجر والعشاء باستخدام { $rule }. | |
+| `phase5-highlat-explain-body-day` | { $city } is inside the polar circle. At this time of year the sun never sets, so there is no sunrise or sunset to compute. { $details } | يقع { $city } داخل الدائرة القطبية. في هذا الوقت من العام لا تغيب الشمس أبداً، فلا يوجد شروق أو غروب يُحسب. { $details } | `{ $details }` = composed per-event sentences (§8); omit any fact the engine cannot supply |
+| `phase5-highlat-explain-body-night` | { $city } is inside the polar circle. At this time of year the sun never rises, so there is no sunrise or sunset to compute. { $details } | يقع { $city } داخل الدائرة القطبية. في هذا الوقت من العام لا تشرق الشمس أبداً، فلا يوجد شروق أو غروب يُحسب. { $details } | |
 | `phase5-highlat-explain-window` | Midnight sun from { $from } to { $to }. | شمس منتصف الليل من { $from } إلى { $to }. | omit if the engine supplies no dates |
 | `phase5-highlat-explain-window-night` | Polar night from { $from } to { $to }. | الليل القطبي من { $from } إلى { $to }. | |
 | `phase5-highlat-change-rule` | Change rule | تغيير القاعدة | deep-links to CALCULATION |
@@ -186,6 +196,14 @@ only when the sun never reaches the twilight angle.
 | `phase5-highlat-how-computed` | How these times are computed | كيف تُحساب هذه الأوقات | expandable, collapsed by default |
 | `phase5-highlat-variance` | see plural below | see plural below | "{ $minutes } minutes" |
 | `phase5-highlat-finetune` | Fine-tune times | ضبط دقيق للأوقات | per-prayer ± steppers |
+| `phase5-highlat-strip-title-estimated` | Some times are estimated | بعض الأوقات مُقدَّرة | non-polar strip title |
+| `phase5-highlat-strip-rule-estimated` | { $events } {is\|are} estimated using { $rule }. | يُقدَّر { $events } باستخدام { $rule }. | `{ $events }` precomposed run (§8); `{is\|are}` resolved in Rust |
+| `phase5-highlat-strip-plain-estimated` | { $events } {is\|are} estimated. | يُقدَّر { $events }. | rule-INDEPENDENT estimated — never names a rule |
+| `phase5-highlat-strip-undefined` | { $events } {has\|have} no defined time. | { $events }: لا وقت محدد. | per-event honest Undefined |
+| `phase5-highlat-moonsighting-substitution` | At this latitude the Moonsighting Committee method substitutes seasonal estimates for { $events }. | عند هذا خط العرض، تُقدَّر { $events } تقديراً موسمياً بطريقة لجنة رؤية الهلال. | never claims angle-failure |
+| `phase5-highlat-sun-never-reaches` | The sun never reaches the twilight angle here today, so { $estimated } | الشمس لا تصل إلى زاوية الشفق هنا اليوم، لذا { $estimated } | `{ $estimated }` = composed event sentences |
+| `phase5-highlat-sun-computed` | Sunrise and sunset are sun-computed. | الشروق والغروب محسوبان من الشمس. | appended only when both are Sun |
+| `phase5-highlat-variance-unknown` | Different sources can give different times. Fine-tune any prayer below. | قد تختلف المصادر في الأوقات. يمكنك ضبط أي صلاة أدناه. | F2/n-a None fallback (no numeric spread) |
 
 ### 4.4 Calendar views & Ramadan mode
 
@@ -198,6 +216,7 @@ only when the sun never reaches the twilight angle.
 | `phase5-cal-nav-prev` | Previous month | الشهر السابق | |
 | `phase5-cal-nav-next` | Next month | الشهر التالي | |
 | `phase5-cal-nav-disabled` | Dates unavailable beyond { $bound } | التواريخ غير متاحة بعد { $bound } | engine bound, never extrapolated |
+| `phase5-cal-nav-disabled-before` | Dates unavailable before { $bound } | التواريخ غير متاحة قبل { $bound } | prev-side bound; the key above stays the "beyond" side |
 | `phase5-cal-hijri-month-01` | Muharram | محرم | fixed terms |
 | `phase5-cal-hijri-month-02` | Safar | صفر | |
 | `phase5-cal-hijri-month-03` | Rabi' al-Awwal | ربيع الأول | |
@@ -230,6 +249,14 @@ only when the sun never reaches the twilight angle.
 | `phase5-error-db-missing-body` | The app could not read its bundled city database. Reinstall the app to restore it. | تعذّرت قراءة قاعدة بيانات المدن المدمجة. أعد تثبيت التطبيق لاستعادتها. | bundled — no network implied |
 | `phase5-error-generic-title` | Something went wrong | حدث خطأ غير متوقع | |
 | `phase5-error-generic-body` | Try again; if it keeps happening, reinstall the app. | أعد المحاولة؛ فإن تكرر الخطأ فأعد تثبيت التطبيق. | |
+| `phase5-city-manual-error-both` | Latitude must be between { $min } and { $max }. Longitude must be between { $min } and { $max }. | يجب أن يكون خط العرض بين { $min } و { $max }. ويجب أن يكون خط الطول بين { $min } و { $max }. | combined parse error (both fields invalid) |
+
+### 4.6 Notification titles
+
+| Key | English | Arabic | Notes |
+|---|---|---|---|
+| `phase5-notify-suhur` | Suhur reminder · { $title } | تذكير بالسحور · { $title } | Ramadan-mode Fajr pre-alert prefix |
+| `phase5-notify-iftar` | Iftar reminder · { $title } | تذكير بالإفطار · { $title } | Ramadan-mode Maghrib pre-alert prefix |
 
 ---
 
@@ -252,6 +279,10 @@ only when the sun never reaches the twilight angle.
 | `{ $from }`, `{ $to }` | string | polar window dates | own Latin run |
 | `{ $bound }` | string | the engine's Hijri range bound | own Latin run |
 | `{ $minutes }` | number | the variance figure | own Latin run |
+| `{ $events }` | string | precomposed event names for the strip | own run (per §8) |
+| `{ $details }` | string | composed per-event strip sentences | own run |
+| `{ $estimated }` | string | composed "estimated" sentences | own run |
+| `{ $title }` | string | the notification's base title | own run |
 
 **Rendering rule.** A catalogue value may contain `{ $… }` but no Latin letters.
 At render time it splits at each placeholder into separate runs with their own
@@ -375,15 +406,22 @@ changes — the label stays.
 
 | Group | Keys |
 |---|---|
-| 4.1 City search & selection | 32 |
-| 4.2 Mosque profiles | 23 |
-| 4.3 High-latitude honesty | 23 |
-| 4.4 Calendar & Ramadan mode | 29 |
-| 4.5 Shared actions & errors | 5 |
-| **Total** | **112** |
+| 4.1 City search & selection | 33 |
+| 4.2 Mosque profiles | 24 |
+| 4.3 High-latitude honesty | 31 |
+| 4.4 Calendar & Ramadan mode | 30 |
+| 4.5 Shared actions & errors | 6 |
+| 4.6 Notification titles | 2 |
+| **Total** | **126** |
 
-112 catalogue keys = 112 English strings + 112 Arabic strings (three of each are
-Fluent plural blocks).
+126 catalogue keys = 126 English strings + 126 Arabic strings (three of which are
+Fluent plural blocks). The N6 pass added 14 keys on 2026-11-20 (112 → 126).
+
+**AR-run coverage (N6).** 18 of the 111 pre-N6 catalog values are rendered in
+Arabic in the shipped app — the EN-primary-until-Phase-6 convention. Prism §5.2
+explicitly requires the AR `estimated` caption (مُقدَّر) and §7.4 the
+caption/privacy AR runs; those values are catalogued now. Closing the AR gap is
+Phase 6 catalog work, not a Phase 5 code change.
 
 ---
 
@@ -415,3 +453,10 @@ feature — never a dependency of the bundled path.
 | `phase5-mosque-done` | "إتمام" for the editor's Done action; confirm it does not read as "completion of worship". |
 | Hijri month 04 | The app ships **ربيع الآخر**; `hijridate`'s Arabic table says **ربيع الثاني**. Both are used; the shipped form is kept — confirm. |
 | `phase5-city-use-location-privacy` | Proposal said "No network"; this says "nothing leaves this device", which is true even if assisted GPS is used. Confirm the wording. |
+| `phase5-highlat-strip-rule-estimated` / `-plain-estimated` | New N6 keys. The `{is\|are}` / `{has\|have}` copula is composed in Rust; confirm the Arabic verbal forms (يُقدَّر …) read naturally for one and for two events. |
+| `phase5-highlat-strip-undefined` | `{ $events }: لا وقت محدد.` — a colon construction, chosen to avoid dual/plural copula agreement; confirm it reads as a complete sentence. |
+| `phase5-highlat-moonsighting-substitution` | New N6 key; the Arabic re-orders the sentence (تقدير موسمي بطريقة لجنة رؤية الهلال). Confirm the meaning survives. |
+| `phase5-highlat-sun-never-reaches` / `-sun-computed` | New N6 keys; the trailing `{ $estimated }` is a composed run, so the Arabic connector "لذا" must agree with whatever follows. Confirm. |
+| `phase5-notify-suhur` / `-iftar` | New N6 keys; "تذكير بالسحور · …" / "تذكير بالإفطار · …" — confirm the · separator and the base-title hand-off. |
+| `phase5-city-tz-search-placeholder` | AR deliberately drops the "IANA" acronym (rule 1); confirm "ابحث عن منطقة زمنية" is clear without it. |
+| `phase5-city-manual-error-both` | Two sentences in one string; confirm the repeated `{ $min }`/`{ $max }` values read cleanly in Arabic. |
