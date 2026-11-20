@@ -938,6 +938,12 @@ export component MainWindow inherits Window {
                             font-weight: 400;
                             color: Palette.ink;
                         }
+                        if (next_none_visible) : Text {
+                            text: "No defined time today — see why";
+                            font-size: 12px;
+                            color: Palette.accent;
+                            TouchArea { clicked => { show-explain(); } }
+                        }
                     }
                 }
 

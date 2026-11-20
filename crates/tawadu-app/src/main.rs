@@ -724,12 +724,27 @@ fn recents_model(state: &AppState) -> ModelRc<CityResult> {
 fn run_picker_search(ui: &MainWindow, state: &AppState, query: &str) {
     let Some(db) = &state.city_db else {
         ui.set_picker_db_available(false);
-        ui.set_picker_message("City database unavailable — enter coordinates manually.".into());
-        ui.set_picker_message_body("".into());
+        // N2: Quill phase5-error-db-missing-title/body verbatim.
+        ui.set_picker_message("City database not found".into());
+        ui.set_picker_message_body(
+            "The app could not read its bundled city database. Reinstall the app to restore it."
+                .into(),
+        );
         return;
     };
     ui.set_picker_db_available(true);
-    let hits = db.search(query, 50).unwrap_or_default();
+    // N2: a DB ERROR is not "no results" — honest generic error copy.
+    let hits = match db.search(query, 50) {
+        Ok(h) => h,
+        Err(e) => {
+            log::error!("city search failed: {e}");
+            ui.set_picker_message("Something went wrong".into());
+            ui.set_picker_message_body(
+                "Try again; if it keeps happening, reinstall the app.".into(),
+            );
+            return;
+        }
+    };
     let disamb = if hits.len() > 1 {
         let name = hits[0].name.to_lowercase();
         let n = hits
