@@ -561,6 +561,47 @@ component AudioSlider inherits Rectangle {
 
 // Phase 5 calendar cell (Prism §6.1): dual numbering, today ring, gold
 // Ramadan dot, out-of-month muted but numbered (no blank cells).
+// N7: the Ramadan-mode change is SUGGESTED here and applied only when the
+// user confirms (Prism §6.2). kind 1 = turn on, 2 = turn off. Rendered inline
+// (the app's idiom — never a modal), in the calendar view and in APPEARANCE.
+component RamadanConfirm inherits Rectangle {
+    in property <int> kind;
+    callback apply(bool);
+    callback cancel();
+    background: Palette.surface-secondary;
+    border-color: Palette.accent;
+    border-width: 1px;
+    border-radius: Palette.radius-small;
+    VerticalLayout {
+        padding: 12px;
+        spacing: 6px;
+        Text {
+            text: kind == 1 ? "Turn on Ramadan mode?" : "Turn off Ramadan mode?";
+            font-size: 14px;
+            font-weight: 600;
+            color: Palette.ink;
+            wrap: word-wrap;
+        }
+        Text {
+            text: kind == 1
+                ? "Suggests the Ramadan theme, turns the Fajr pre-alert into a suhur reminder and the Maghrib pre-alert into an iftar reminder, and marks Ramadan days in the calendar. Nothing else changes."
+                : "Restore the previous theme? The suhur and iftar reminder names and the calendar marks stop.";
+            font-size: 12px;
+            color: Palette.ink;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            Action {
+                label: kind == 1 ? "Turn on Ramadan mode" : "Turn off Ramadan mode";
+                primary: kind == 1;
+                triggered => { apply(kind == 1); }
+            }
+            Action { label: "Cancel"; primary: false; triggered => { cancel(); } }
+        }
+    }
+}
+
 component DayCell inherits Rectangle {
     in property <CalendarDay> day;
     in property <string> primary;
@@ -689,6 +730,8 @@ export component MainWindow inherits Window {
     in property <bool> ramadan_month;
     in property <bool> ramadan_mode;
     in property <int> ramadan_banner;
+    /// N7: 0 = no card, 1 = turn-on confirm, 2 = turn-off confirm.
+    in property <int> ramadan_confirm;
     in property <string> hijri_range_note;
     in property <bool> calendar_prev_enabled;
     in property <bool> calendar_next_enabled;
@@ -791,6 +834,8 @@ export component MainWindow inherits Window {
     callback set-calendar-primary(string);
     callback pick-day(string);
     callback set-ramadan-mode(bool);
+    callback request-ramadan-mode(bool);
+    callback cancel-ramadan-confirm();
     callback set-method(string);
     callback set-madhab(string);
     callback set-high-latitude(string);
@@ -1438,10 +1483,24 @@ export component MainWindow inherits Window {
                     border-width: 1px;
                     border-radius: Palette.radius;
                     Section { title: "APPEARANCE";
-                        Toggle {
+                        // N7: the row lives here only while the mode is on or
+                        // the calendar is in Ramadan (Prism §2/§6.3); the
+                        // calendar header keeps a manual enable path.
+                        if (ramadan_mode || ramadan_month) : Toggle {
                             label: "Ramadan mode";
                             on: ramadan_mode;
-                            toggled(on) => { set-ramadan-mode(on); }
+                            toggled(on) => { request-ramadan-mode(on); }
+                        }
+                        if (ramadan_mode) : Text {
+                            text: "Suggests the Ramadan theme, turns the Fajr pre-alert into a suhur reminder and the Maghrib pre-alert into an iftar reminder, and marks Ramadan days in the calendar. Nothing else changes.";
+                            font-size: 11px;
+                            color: Palette.ink-muted;
+                            wrap: word-wrap;
+                        }
+                        if (ramadan_confirm != 0) : RamadanConfirm {
+                            kind: ramadan_confirm;
+                            apply(on) => { set-ramadan-mode(on); }
+                            cancel => { cancel-ramadan-confirm(); }
                         }
                         Segmented {
                             label: "Theme";
@@ -1706,7 +1765,7 @@ export component MainWindow inherits Window {
                         Text { text: "Ramadan"; font-size: 14px; font-weight: 600; color: Palette.ink; vertical-alignment: center; }
                         Text { text: "رمضان"; font-size: 14px; color: Palette.ink; vertical-alignment: center; }
                         Rectangle { }
-                        Action { label: "Turn on Ramadan mode"; primary: true; triggered => { set-ramadan-mode(true); } }
+                        Action { label: "Turn on Ramadan mode"; primary: true; triggered => { request-ramadan-mode(true); } }
                     }
                 }
                 if (ramadan_banner == 2) : Rectangle {
@@ -1717,8 +1776,20 @@ export component MainWindow inherits Window {
                         spacing: 12px;
                         Text { text: "Ramadan has ended — turn off mode?"; font-size: 13px; color: Palette.ink; vertical-alignment: center; }
                         Rectangle { }
-                        Action { label: "Turn off Ramadan mode"; primary: false; triggered => { set-ramadan-mode(false); } }
+                        Action { label: "Turn off Ramadan mode"; primary: false; triggered => { request-ramadan-mode(false); } }
                     }
+                }
+                // N7: manual enable path — always reachable from the calendar,
+                // so opting in never depends on the Hijri banner appearing.
+                if (!ramadan_mode) : Action {
+                    label: "Turn on Ramadan mode";
+                    primary: false;
+                    triggered => { request-ramadan-mode(true); }
+                }
+                if (ramadan_confirm != 0) : RamadanConfirm {
+                    kind: ramadan_confirm;
+                    apply(on) => { set-ramadan-mode(on); }
+                    cancel => { cancel-ramadan-confirm(); }
                 }
                 HorizontalLayout {
                     spacing: 8px;
