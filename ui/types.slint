@@ -93,3 +93,15 @@ export struct ContextChip {
     label: string,
     active: bool,
 }
+
+// ---- Phase 5 city picker (Prism §8; region-line is Rust-composed per the
+// "never compose factual strings in Slint" gotcha — admin1 code · IANA tz) ----
+
+export struct CityResult {
+    id: string,
+    name: string,
+    name-ar: string,
+    country: string,
+    region-line: string,
+    timezone: string,
+}

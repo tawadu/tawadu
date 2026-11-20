@@ -19,8 +19,10 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, NaiveTime, Utc};
 use slint::{ModelRc, SharedString, Timer, TimerMode, VecModel};
 use tawadu_core::athkar::{self, Context, ContextTimes, Corpus};
+use tawadu_core::cities::{CityDb, CityHit};
 use tawadu_core::hijri::from_gregorian;
 use tawadu_core::locations::{find_city, Location, CITIES};
+use tawadu_core::locations::{push_recent, timezone_list, validate_coordinates};
 use tawadu_core::notify::{self, NotificationKind};
 use tawadu_core::prayer::{self, HighLatitudeRule, Madhab, Method, Prayer, PrayerTimes, Rounding};
 use tawadu_core::scheduler::{self, EventKind, IqamahOffsets, Timeline};
@@ -105,6 +107,14 @@ impl SaveDebounce {
 /// Everything the interface can change, plus where it is kept.
 /// Athkar UI state (Phase 4). RefCell for the same reason as debounce:
 /// apply_home takes &AppState; the AppState Mutex serializes access.
+/// City-picker UI state (Phase 5). RefCell like debounce/athkar: the
+/// AppState Mutex serializes access; callbacks take &AppState.
+struct PickerUi {
+    pending_query: Option<String>,
+    results: Vec<CityHit>,
+    highlight: i32,
+}
+
 struct AthkarUi {
     ctx: Context,
     loaded_ctx: Option<Context>,
@@ -132,6 +142,10 @@ struct AppState {
     corpus: Option<Corpus>,
     /// Athkar context/progress UI state.
     athkar: std::cell::RefCell<AthkarUi>,
+    /// Bundled GeoNames city DB (Phase 5). None = fail-soft: the picker
+    /// says so honestly and manual coordinates still work.
+    city_db: Option<CityDb>,
+    picker: std::cell::RefCell<PickerUi>,
 }
 
 /// Decode a serde snake_case key back into a config value.
@@ -339,7 +353,15 @@ fn apply_home(ui: &MainWindow, state: &AppState) {
     let next = next_prayer(&times, &location, &state.settings);
     let now = now();
 
-    ui.set_location_name(location.name.clone().into());
+    let display_name = if location.name.is_empty() {
+        format!(
+            "{:.4}, {:.4}",
+            location.coordinates.latitude, location.coordinates.longitude
+        )
+    } else {
+        location.name.clone()
+    };
+    ui.set_location_name(display_name.into());
     ui.set_location_name_ar(location.name_ar.clone().into());
     let hijri = from_gregorian(location.local(now).date_naive())
         .map(|h| format!("{} {} {} هـ", h.day, h.month_name_ar(), h.year))
@@ -542,6 +564,132 @@ fn build_athkar_view(ui: &MainWindow, corpus: &Corpus, a: &AthkarUi) {
     ui.set_athkar_context_key(a.ctx.key().into());
 }
 
+/// Locate the bundled derived city DB: next to the exe (installed layout,
+/// Phase 6 revisits) or the workspace assets dir in dev. Opening is cheap —
+/// indexes are PRE-BUILT by scripts/build_city_db.py (the off-UI-thread
+/// index condition is satisfied at build time, not startup).
+fn city_db_path() -> Option<std::path::PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for cand in [dir.join("assets/cities.db"), dir.join("cities.db")] {
+                if cand.exists() {
+                    return Some(cand);
+                }
+            }
+        }
+    }
+    let dev = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/cities.db");
+    if dev.exists() {
+        return Some(dev);
+    }
+    None
+}
+
+fn recents_model(state: &AppState) -> ModelRc<CityResult> {
+    let rows: Vec<CityResult> = state
+        .settings
+        .recent_cities
+        .iter()
+        .enumerate()
+        .map(|(i, r)| CityResult {
+            id: i.to_string().into(),
+            name: if r.name.is_empty() {
+                format!("{:.4}, {:.4}", r.latitude, r.longitude)
+            } else {
+                r.name.clone()
+            }
+            .into(),
+            name_ar: r.name_ar.clone().into(),
+            country: String::new().into(),
+            region_line: r.timezone.clone().into(),
+            timezone: r.timezone.clone().into(),
+        })
+        .collect();
+    ModelRc::new(VecModel::from(rows))
+}
+
+/// Run a picker search: prefix (+substring fallback) over the bundled DB,
+/// population-ranked, capped 50 with the honest cap caption; duplicate
+/// names get the disambiguation caption; every row carries country +
+/// admin1 · IANA zone (Rust-composed runs, never Slint arithmetic).
+fn run_picker_search(ui: &MainWindow, state: &AppState, query: &str) {
+    let Some(db) = &state.city_db else {
+        ui.set_picker_db_available(false);
+        ui.set_picker_message("City database unavailable — enter coordinates manually.".into());
+        ui.set_picker_message_body("".into());
+        return;
+    };
+    ui.set_picker_db_available(true);
+    let hits = db.search(query, 50).unwrap_or_default();
+    let disamb = if hits.len() > 1 {
+        let name = hits[0].name.to_lowercase();
+        let n = hits
+            .iter()
+            .filter(|h| h.name.to_lowercase() == name)
+            .count();
+        if n > 1 {
+            format!("{n} places share this name — choose by region and country.")
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+    let rows: Vec<CityResult> = hits
+        .iter()
+        .map(|h| CityResult {
+            id: h.geonameid.to_string().into(),
+            name: h.name.clone().into(),
+            name_ar: h.name_ar.clone().into(),
+            country: h.country.clone().into(),
+            region_line: format!("{} · {}", h.admin1, h.timezone.name()).into(),
+            timezone: h.timezone.name().into(),
+        })
+        .collect();
+    let capped = hits.len() >= 50;
+    let empty = hits.is_empty();
+    let mut p = state.picker.borrow_mut();
+    p.results = hits;
+    p.highlight = if empty { -1 } else { 0 };
+    ui.set_highlighted_result(p.highlight);
+    drop(p);
+    ui.set_picker_results(ModelRc::new(VecModel::from(rows)));
+    ui.set_city_cap_visible(capped);
+    ui.set_city_disambiguation(disamb.into());
+    if empty && !query.trim().is_empty() {
+        ui.set_picker_message(format!("No matches for “{}”.", query.trim()).into());
+        ui.set_picker_message_body(
+            "Try the Arabic name, enter coordinates manually, or use your location.".into(),
+        );
+    } else {
+        ui.set_picker_message("".into());
+        ui.set_picker_message_body("".into());
+    }
+}
+
+/// Apply a chosen place: settings + recents ride the debounced save path;
+/// the scheduler wakes; the status line confirms (Quill selected-message).
+fn apply_location(ui: &MainWindow, state: &mut AppState, loc: tawadu_core::locations::Location) {
+    let stored = tawadu_core::settings::StoredLocation::from_location(&loc);
+    let label = if loc.name.is_empty() {
+        format!(
+            "{:.4}, {:.4}",
+            loc.coordinates.latitude, loc.coordinates.longitude
+        )
+    } else {
+        loc.name.clone()
+    };
+    state.settings.location = stored.clone();
+    push_recent(&mut state.settings.recent_cities, stored);
+    state.status = format!("Location set to {label}.");
+    state.changed();
+    if let Some(wake) = &state.wake {
+        let _ = wake.send(());
+    }
+    apply_home(ui, state);
+    apply_settings(ui, state);
+}
+
 fn apply_settings(ui: &MainWindow, state: &AppState) {
     let settings = &state.settings;
     let location = state.location();
@@ -560,6 +708,7 @@ fn apply_settings(ui: &MainWindow, state: &AppState) {
     ui.set_quiet_from(n.quiet_from.format("%H:%M").to_string().into());
     ui.set_quiet_to(n.quiet_to.format("%H:%M").to_string().into());
     ui.set_location_query(location.name.clone().into());
+    ui.set_settings_location_tz(state.settings.location.timezone.clone().into());
     ui.set_city_results(ModelRc::new(VecModel::from(Vec::<CityRow>::new())));
 
     let (left, right) = method_rows();
@@ -1532,6 +1681,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             done: std::collections::HashMap::new(),
             dirty: true,
         }),
+        city_db: match city_db_path().and_then(|p| CityDb::open(&p).ok()) {
+            Some(db) => Some(db),
+            None => {
+                log::warn!("city database unavailable; picker falls back to manual coordinates");
+                None
+            }
+        },
+        picker: std::cell::RefCell::new(PickerUi {
+            pending_query: None,
+            results: Vec::new(),
+            highlight: -1,
+        }),
     }));
 
     let (wake_tx, wake_rx) = mpsc::channel::<()>();
@@ -1763,6 +1924,179 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     drop(a);
                     apply_home(&ui, &s);
                 }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_open_city_picker(move || {
+            if let Some(ui) = weak.upgrade() {
+                let s = state.lock().unwrap();
+                ui.set_recent_cities(recents_model(&s));
+                ui.set_city_query("".into());
+                ui.set_manual_error("".into());
+                run_picker_search(&ui, &s, "");
+                ui.set_page("city-picker".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_picker_back(move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_page("settings".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_search_cities(move |text| {
+            if weak.upgrade().is_some() {
+                let s = state.lock().unwrap();
+                s.picker.borrow_mut().pending_query = Some(text.to_string());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_pick_city(move |id| {
+            if let Some(ui) = weak.upgrade() {
+                let mut s = state.lock().unwrap();
+                let hit = id
+                    .parse::<u32>()
+                    .ok()
+                    .and_then(|gid| s.city_db.as_ref()?.by_id(gid).ok().flatten());
+                if let Some(hit) = hit {
+                    apply_location(&ui, &mut s, hit.location());
+                    ui.set_page("settings".into());
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_pick_recent(move |id| {
+            if let Some(ui) = weak.upgrade() {
+                let mut s = state.lock().unwrap();
+                let stored = id
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|i| s.settings.recent_cities.get(i).cloned());
+                if let Some(stored) = stored {
+                    apply_location(&ui, &mut s, stored.resolve());
+                    ui.set_page("settings".into());
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_nav_result(move |delta| {
+            if let Some(ui) = weak.upgrade() {
+                let s = state.lock().unwrap();
+                let mut p = s.picker.borrow_mut();
+                let len = p.results.len() as i32;
+                if len > 0 {
+                    p.highlight = (p.highlight + delta).rem_euclid(len);
+                    ui.set_highlighted_result(p.highlight);
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_use_gps(move || {
+            if let Some(ui) = weak.upgrade() {
+                // GPS is Phase 5 slice 6 (opt-in Windows API). Until it
+                // lands the row is honestly unavailable — manual entry works.
+                ui.set_picker_message(
+                    "Location is unavailable on this device — enter coordinates manually.".into(),
+                );
+                ui.set_picker_message_body("".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_apply_coords(move |lat, lon, tz, name| {
+            if let Some(ui) = weak.upgrade() {
+                let mut s = state.lock().unwrap();
+                let lat = lat.trim().parse::<f64>();
+                let lon = lon.trim().parse::<f64>();
+                let (lat, lon) = match (lat, lon) {
+                    (Ok(a), Ok(b)) => (a, b),
+                    _ => {
+                        ui.set_manual_error(
+                            "Latitude must be between -90 and 90. Longitude must be between -180 and 180.".into(),
+                        );
+                        return;
+                    }
+                };
+                if let Err(which) = validate_coordinates(lat, lon) {
+                    ui.set_manual_error(
+                        if which == "latitude" {
+                            "Latitude must be between -90 and 90."
+                        } else {
+                            "Longitude must be between -180 and 180."
+                        }
+                        .into(),
+                    );
+                    return;
+                }
+                let zone: chrono_tz::Tz = match tz.trim().parse() {
+                    Ok(z) => z,
+                    Err(_) => {
+                        ui.set_manual_error("Choose a timezone.".into());
+                        return;
+                    }
+                };
+                let loc = tawadu_core::locations::Location::new(
+                    name.trim(),
+                    "",
+                    tawadu_core::prayer::Coordinates::new(lat, lon),
+                    zone,
+                );
+                ui.set_manual_error("".into());
+                apply_location(&ui, &mut s, loc);
+                ui.set_page("settings".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_search_tz(move |q| {
+            if let Some(ui) = weak.upgrade() {
+                let q = q.trim().to_lowercase();
+                let rows: Vec<OptionRow> = if q.is_empty() {
+                    Vec::new()
+                } else {
+                    timezone_list()
+                        .into_iter()
+                        .filter(|z| z.to_lowercase().contains(&q))
+                        .take(30)
+                        .map(|z| OptionRow {
+                            value: z.into(),
+                            label: z.into(),
+                        })
+                        .collect()
+                };
+                ui.set_tz_results(ModelRc::new(VecModel::from(rows)));
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_pick_tz(move |zone| {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_manual_tz(zone.clone());
+                ui.set_manual_tz_query("".into());
+                ui.set_tz_results(ModelRc::new(VecModel::from(Vec::<OptionRow>::new())));
             }
         });
     }
@@ -2037,6 +2371,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // and the day rollover reloads progress without any interaction.
         apply_athkar(&ui, &guard, &location, &times);
     });
+
+    // City-picker search debounce (~150 ms, Prism §3): the expensive scan
+    // runs once per pause, never per keystroke.
+    let picker_timer = Timer::default();
+    {
+        let handle = ui.as_weak();
+        let picker_state = Arc::clone(&state);
+        picker_timer.start(TimerMode::Repeated, Duration::from_millis(150), move || {
+            let Some(ui) = handle.upgrade() else {
+                return;
+            };
+            let s = picker_state.lock().unwrap();
+            let pending = s.picker.borrow_mut().pending_query.take();
+            if let Some(q) = pending {
+                run_picker_search(&ui, &s, &q);
+            }
+        });
+    }
 
     // ---- notification switches ----
     {
@@ -2896,6 +3248,12 @@ mod tests {
             library: None,
             engine: None,
             corpus: Some(Corpus::bundled().unwrap()),
+            city_db: None,
+            picker: std::cell::RefCell::new(PickerUi {
+                pending_query: None,
+                results: Vec::new(),
+                highlight: -1,
+            }),
             athkar: std::cell::RefCell::new(AthkarUi {
                 ctx,
                 loaded_ctx: Some(ctx),

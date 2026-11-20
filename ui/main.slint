@@ -9,7 +9,7 @@
 //  - Arabic and Latin never share one `text:` string. The bidi algorithm then
 //    reorders the runs and the words come out of line. Each run gets its own Text.
 
-import { AthkarItemView, CityRow, ContextChip, CreditPack, CreditRow, EventVoiceRow, MethodRow, OptionRow, PackRow, Row, VoiceOption } from "types.slint";
+import { AthkarItemView, CityResult, CityRow, ContextChip, CreditPack, CreditRow, EventVoiceRow, MethodRow, OptionRow, PackRow, Row, VoiceOption } from "types.slint";
 
 // Design tokens — Plaster theme. Declared here (not in an imported file) so the
 // Rust side can reach the global and switch themes at runtime.
@@ -24,6 +24,8 @@ export global Palette {
     in property <color> accent-soft: #E3EEE9;
     in property <color> accent-ink: #FFFFFF;
     in property <color> gold: #B08A4A;
+    // Phase 5: inline validation errors (Prism token review flagged in PR).
+    in property <color> danger: #9C3B2E;
     // Ramadan defines no distinct gold — its accent IS gold (Prism §4).
     in property <bool> gold-is-accent: false;
     in property <length> radius: 16px;
@@ -586,6 +588,26 @@ export component MainWindow inherits Window {
     in property <string> settings_location_name_ar;
     in-out property <string> location_query;
     in property <[CityRow]> city_results;
+    // ---- Phase 5 city picker (Prism §3/§8, Quill §4.1 verbatim) ----
+    in-out property <string> city_query;
+    in property <[CityResult]> picker_results;
+    in property <[CityResult]> recent_cities;
+    in-out property <int> highlighted_result;
+    in property <string> picker_message;
+    in property <string> picker_message_body;
+    in property <string> city_disambiguation;
+    in property <bool> city_cap_visible;
+    in property <bool> gps_available;
+    in property <bool> picker_db_available;
+    in-out property <bool> coords_open;
+    in-out property <string> manual_lat;
+    in-out property <string> manual_lon;
+    in-out property <string> manual_name;
+    in-out property <string> manual_tz;
+    in-out property <string> manual_tz_query;
+    in property <[OptionRow]> tz_results;
+    in property <string> manual_error;
+    in property <string> settings_location_tz;
     in property <[MethodRow]> methods_left;
     in property <[MethodRow]> methods_right;
     in property <string> selected_method;
@@ -650,6 +672,16 @@ export component MainWindow inherits Window {
     callback close-settings();
     callback search-city(string);
     callback select-city(string);
+    callback open-city-picker();
+    callback picker-back();
+    callback search-cities(string);
+    callback pick-city(string);
+    callback pick-recent(string);
+    callback nav-result(int);
+    callback use-gps();
+    callback apply-coords(string, string, string, string);
+    callback search-tz(string);
+    callback pick-tz(string);
     callback set-method(string);
     callback set-madhab(string);
     callback set-high-latitude(string);
@@ -937,47 +969,15 @@ export component MainWindow inherits Window {
                                 color: Palette.accent;
                             }
                         }
-                        HorizontalLayout {
-                            spacing: 8px;
-                            TextInput {
-                                width: 240px;
-                                height: 30px;
-                                text: location_query;
-                                font-size: 13px;
-                                color: Palette.ink;
-                            }
-                            Action {
-                                label: "بحث";
-                                primary: true;
-                                triggered => { search-city(location_query); }
-                            }
+                        RowText {
+                            text: settings_location_tz;
+                            font-size: 12px;
+                            color: Palette.ink-muted;
                         }
-                        for city in city_results : Rectangle {
-                            height: 28px;
-                            background: Palette.surface-secondary;
-                            border-radius: Palette.radius-small;
-                            HorizontalLayout {
-                                padding-left: 10px;
-                                spacing: 6px;
-                                RowText {
-                                    text: city.name;
-                                    font-size: 12px;
-                                    color: Palette.ink;
-                                }
-                                RowText {
-                                    text: city.name_ar;
-                                    font-size: 12px;
-                                    color: Palette.ink-muted;
-                                }
-                                RowText {
-                                    text: city.country;
-                                    font-size: 11px;
-                                    color: Palette.ink-muted;
-                                }
-                            }
-                            TouchArea {
-                                clicked => { select-city(city.name); }
-                            }
+                        Action {
+                            label: "City picker";
+                            primary: false;
+                            triggered => { open-city-picker(); }
                         }
                     }
                 }
@@ -1352,6 +1352,306 @@ export component MainWindow inherits Window {
                     triggered => { close-settings(); }
                 }
             }
+            }
+        }
+
+        // ---- Phase 5 city picker (Prism §3, Quill §4.1 verbatim) ----
+        if (page == "city-picker") : FocusScope {
+            key-pressed(event) => {
+                if (event.text == Key.UpArrow) {
+                    nav-result(-1);
+                    return accept;
+                }
+                if (event.text == Key.DownArrow) {
+                    nav-result(1);
+                    return accept;
+                }
+                if (event.text == Key.Return) {
+                    if (highlighted_result >= 0 && highlighted_result < picker_results.length) {
+                        pick-city(picker_results[highlighted_result].id);
+                    }
+                    return accept;
+                }
+                if (event.text == Key.Escape) {
+                    picker-back();
+                    return accept;
+                }
+                reject
+            }
+            VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+                HorizontalLayout {
+                    spacing: 12px;
+                    Action { label: "Back to settings"; primary: false; triggered => { picker-back(); } }
+                    Text {
+                        text: "City picker";
+                        font-size: 20px;
+                        font-weight: 600;
+                        color: Palette.ink;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: "اختيار المدينة";
+                        font-size: 16px;
+                        color: Palette.ink-muted;
+                        vertical-alignment: center;
+                        horizontal-alignment: end;
+                    }
+                }
+                Rectangle {
+                    height: 36px;
+                    background: Palette.surface;
+                    border-color: Palette.border;
+                    border-width: 1px;
+                    border-radius: Palette.radius-small;
+                    TextInput {
+                        x: 10px;
+                        y: 6px;
+                        width: parent.width - 20px;
+                        height: 24px;
+                        text: city_query;
+                        font-size: 14px;
+                        color: Palette.ink;
+                        edited => { search-cities(self.text); }
+                    }
+                    if (city_query == "") : Text {
+                        x: 10px;
+                        y: 8px;
+                        text: "Search cities — English or Arabic";
+                        font-size: 14px;
+                        color: Palette.ink-muted;
+                    }
+                }
+                if (recent_cities.length > 0) : HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Recent"; font-size: 12px; color: Palette.ink-muted; vertical-alignment: center; }
+                    for r in recent_cities: Rectangle {
+                        height: 28px;
+                        width: recent-label.preferred-width + 18px;
+                        border-radius: 14px;
+                        background: Palette.surface-secondary;
+                        recent-label := Text {
+                            text: r.name;
+                            font-size: 12px;
+                            color: Palette.ink;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        TouchArea { clicked => { pick-recent(r.id); } }
+                    }
+                }
+                if (city_disambiguation != "") : Text {
+                    text: city_disambiguation;
+                    font-size: 12px;
+                    color: Palette.ink-muted;
+                    wrap: word-wrap;
+                }
+                if (picker_db_available) : Flickable {
+                    height: 300px;
+                    content-height: picker_results.length * 52px;
+                    VerticalLayout {
+                        spacing: 0px;
+                        for result[i] in picker_results: Rectangle {
+                            height: 52px;
+                            background: i == highlighted_result ? Palette.surface-secondary : Palette.surface;
+                            border-color: Palette.border;
+                            border-width: 0.5px;
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 8px;
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    alignment: center;
+                                    Text { text: result.name; font-size: 15px; font-weight: 600; color: Palette.ink; }
+                                    if (result.name-ar != "") : Text {
+                                        text: result.name-ar;
+                                        font-size: 13px;
+                                        color: Palette.ink-muted;
+                                        horizontal-alignment: end;
+                                    }
+                                }
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    alignment: center;
+                                    Text { text: result.country; font-size: 13px; color: Palette.ink; horizontal-alignment: end; }
+                                    Text { text: result.region-line; font-size: 11px; color: Palette.ink-muted; horizontal-alignment: end; }
+                                }
+                            }
+                            TouchArea {
+                                clicked => { pick-city(result.id); }
+                            }
+                        }
+                    }
+                }
+                if (city_cap_visible) : Text {
+                    text: "Showing the first 50 — keep typing to narrow the search.";
+                    font-size: 12px;
+                    color: Palette.ink-muted;
+                }
+                if (picker_message != "") : VerticalLayout {
+                    spacing: 4px;
+                    Text { text: picker_message; font-size: 14px; font-weight: 600; color: Palette.ink; wrap: word-wrap; }
+                    if (picker_message_body != "") : Text {
+                        text: picker_message_body;
+                        font-size: 12px;
+                        color: Palette.ink-muted;
+                        wrap: word-wrap;
+                    }
+                }
+                Text {
+                    text: "Search runs offline over the bundled city list.";
+                    font-size: 11px;
+                    color: Palette.ink-muted;
+                }
+                Rectangle {
+                    background: Palette.surface-secondary;
+                    border-radius: Palette.radius-small;
+                    opacity: gps_available ? 1.0 : 0.6;
+                    VerticalLayout {
+                        padding: 10px;
+                        spacing: 2px;
+                        Text { text: "Use my location"; font-size: 13px; font-weight: 600; color: Palette.ink; }
+                        Text {
+                            text: "Read once, stays on this device. Nothing leaves this device.";
+                            font-size: 11px;
+                            color: Palette.ink-muted;
+                            wrap: word-wrap;
+                        }
+                    }
+                    TouchArea { clicked => { use-gps(); } }
+                }
+                Action {
+                    label: "Enter coordinates manually";
+                    primary: false;
+                    triggered => { coords_open = !coords_open; }
+                }
+                if (coords_open) : VerticalLayout {
+                    spacing: 8px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        VerticalLayout {
+                            spacing: 2px;
+                            Text { text: "Latitude"; font-size: 12px; color: Palette.ink-muted; }
+                            Rectangle {
+                                width: 160px;
+                                height: 30px;
+                                background: Palette.surface;
+                                border-color: Palette.border;
+                                border-width: 1px;
+                                border-radius: Palette.radius-small;
+                                TextInput {
+                                    x: 8px; y: 5px;
+                                    width: parent.width - 16px; height: 20px;
+                                    text: manual_lat;
+                                    font-size: 13px;
+                                    color: Palette.ink;
+                                    edited => { manual_lat = self.text; }
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            spacing: 2px;
+                            Text { text: "Longitude"; font-size: 12px; color: Palette.ink-muted; }
+                            Rectangle {
+                                width: 160px;
+                                height: 30px;
+                                background: Palette.surface;
+                                border-color: Palette.border;
+                                border-width: 1px;
+                                border-radius: Palette.radius-small;
+                                TextInput {
+                                    x: 8px; y: 5px;
+                                    width: parent.width - 16px; height: 20px;
+                                    text: manual_lon;
+                                    font-size: 13px;
+                                    color: Palette.ink;
+                                    edited => { manual_lon = self.text; }
+                                }
+                            }
+                        }
+                    }
+                    Text { text: "Timezone"; font-size: 12px; color: Palette.ink-muted; }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Rectangle {
+                            width: 260px;
+                            height: 30px;
+                            background: Palette.surface;
+                            border-color: Palette.border;
+                            border-width: 1px;
+                            border-radius: Palette.radius-small;
+                            TextInput {
+                                x: 8px; y: 5px;
+                                width: parent.width - 16px; height: 20px;
+                                text: manual_tz_query;
+                                font-size: 13px;
+                                color: Palette.ink;
+                                edited => { search-tz(self.text); }
+                            }
+                            if (manual_tz_query == "") : Text {
+                                x: 8px;
+                                y: 7px;
+                                text: "Search IANA timezones";
+                                font-size: 13px;
+                                color: Palette.ink-muted;
+                            }
+                        }
+                        Text { text: manual_tz; font-size: 13px; color: Palette.accent; vertical-alignment: center; }
+                    }
+                    if (tz_results.length > 0) : Flickable {
+                        height: 120px;
+                        content-height: tz_results.length * 26px;
+                        VerticalLayout {
+                            for zone in tz_results: Rectangle {
+                                height: 26px;
+                                background: Palette.surface-secondary;
+                                Text {
+                                    text: zone.label;
+                                    font-size: 12px;
+                                    color: Palette.ink;
+                                    vertical-alignment: center;
+                                    x: 8px;
+                                }
+                                TouchArea { clicked => { pick-tz(zone.value); } }
+                            }
+                        }
+                    }
+                    Text { text: "Name this place (optional)"; font-size: 12px; color: Palette.ink-muted; }
+                    Rectangle {
+                        width: 320px;
+                        height: 30px;
+                        background: Palette.surface;
+                        border-color: Palette.border;
+                        border-width: 1px;
+                        border-radius: Palette.radius-small;
+                        TextInput {
+                            x: 8px; y: 5px;
+                            width: parent.width - 16px; height: 20px;
+                            text: manual_name;
+                            font-size: 13px;
+                            color: Palette.ink;
+                            edited => { manual_name = self.text; }
+                        }
+                    }
+                    if (manual_error != "") : Text {
+                        text: manual_error;
+                        font-size: 12px;
+                        color: Palette.danger;
+                        wrap: word-wrap;
+                    }
+                    Action {
+                        label: "Use these coordinates";
+                        primary: true;
+                        triggered => { apply-coords(manual_lat, manual_lon, manual_tz, manual_name); }
+                    }
+                }
+                Text {
+                    text: "City data: GeoNames (CC BY 4.0) · geonames.org";
+                    font-size: 11px;
+                    color: Palette.ink-muted;
+                }
             }
         }
 
