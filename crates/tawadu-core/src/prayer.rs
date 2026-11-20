@@ -449,6 +449,12 @@ pub struct Provenance {
     pub maghrib: TimeSource,
     pub isha: TimeSource,
     pub polar: Option<PolarState>,
+    /// Whether the configured rule actually MOVES this event (different
+    /// portions give different times). False for adhan's rule-independent
+    /// polar-night Fajr fallback — the strip must not attribute a rule to
+    /// a value the rule never changes (Sentinel F1).
+    pub fajr_rule_sensitive: bool,
+    pub isha_rule_sensitive: bool,
 }
 
 /// Classify each event against adhan 0.2's ACTUAL semantics (verified in
@@ -527,6 +533,106 @@ pub fn provenance(date: NaiveDate, coordinates: Coordinates, config: &PrayerConf
         maghrib: source(times.maghrib),
         isha: isha_source,
         polar,
+        fajr_rule_sensitive: tm.fajr != tt.fajr,
+        isha_rule_sensitive: tm.isha != ts.isha,
+    }
+}
+
+/// Compose the explanation strip PER EVENT from the provenance (Sentinel
+/// F1): name only the events actually produced by the rule; attribute the
+/// rule only when the value is rule-SENSITIVE; state Undefined events
+/// honestly; never claim angle-failure for Moonsighting's seasonal
+/// substitution. Returns None when there is nothing to explain. Pure —
+/// the strip text is engine-bound, not template-bound (unit-tested).
+pub fn explain_strip(
+    city: &str,
+    rule_label: &str,
+    prov: &Provenance,
+    moonsighting_substituted: bool,
+) -> Option<(String, String)> {
+    let events: [(&str, TimeSource, bool); 2] = [
+        ("Fajr", prov.fajr, prov.fajr_rule_sensitive),
+        ("Isha", prov.isha, prov.isha_rule_sensitive),
+    ];
+    let named: Vec<&str> = events
+        .iter()
+        .filter(|(_, s, sens)| *s == TimeSource::Rule && *sens)
+        .map(|(n, _, _)| *n)
+        .collect();
+    let plain: Vec<&str> = events
+        .iter()
+        .filter(|(_, s, sens)| *s == TimeSource::Rule && !*sens)
+        .map(|(n, _, _)| *n)
+        .collect();
+    let undefined: Vec<&str> = events
+        .iter()
+        .filter(|(_, s, _)| *s == TimeSource::Undefined)
+        .map(|(n, _, _)| *n)
+        .collect();
+    let join = |names: &[&str]| names.join(" and ");
+    let mut sentences: Vec<String> = Vec::new();
+    if !named.is_empty() {
+        sentences.push(format!(
+            "{} {} estimated using {rule_label}.",
+            join(&named),
+            if named.len() == 1 { "is" } else { "are" }
+        ));
+    }
+    if !plain.is_empty() {
+        sentences.push(format!(
+            "{} {} estimated.",
+            join(&plain),
+            if plain.len() == 1 { "is" } else { "are" }
+        ));
+    }
+    if !undefined.is_empty() {
+        sentences.push(format!(
+            "{} {} no defined time.",
+            join(&undefined),
+            if undefined.len() == 1 { "has" } else { "have" }
+        ));
+    }
+    match prov.polar {
+        Some(PolarState::Day) => Some((
+            format!("Midnight sun in {city}"),
+            format!(
+                "{city} is inside the polar circle. At this time of year the sun never sets, so there is no sunrise or sunset to compute. {}",
+                sentences.join(" ")
+            ),
+        )),
+        Some(PolarState::Night) => Some((
+            format!("Polar night in {city}"),
+            format!(
+                "{city} is inside the polar circle. At this time of year the sun never rises, so there is no sunrise or sunset to compute. {}",
+                sentences.join(" ")
+            ),
+        )),
+        None if !named.is_empty() || !plain.is_empty() => {
+            let body = if moonsighting_substituted {
+                format!(
+                    "At this latitude the Moonsighting Committee method substitutes seasonal estimates for {}.",
+                    join(&named.iter().chain(plain.iter()).copied().collect::<Vec<_>>())
+                )
+            } else {
+                // Event sentences keep their case — Fajr/Isha are proper
+                // nouns; only the fixed leading clause is sentence-case.
+                let mut b = format!(
+                    "The sun never reaches the twilight angle here today, so {}",
+                    sentences
+                        .iter()
+                        .filter(|s| s.contains("estimated"))
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                );
+                if prov.sunrise == TimeSource::Sun && prov.maghrib == TimeSource::Sun {
+                    b.push_str(" Sunrise and sunset are sun-computed.");
+                }
+                b
+            };
+            Some(("Some times are estimated".to_string(), body))
+        }
+        None => None,
     }
 }
 
@@ -878,6 +984,94 @@ mod tests {
         // Default method UmmAlQura: Isha = fixed 90-min interval after
         // sunset — the high-latitude rule never applies to it.
         assert_eq!(p.isha, TimeSource::Sun);
+    }
+
+    // ---- F1 (Sentinel): the strip text must be ENGINE-bound per event ----
+
+    #[test]
+    fn tromsoe_december_strip_names_only_fajr_and_no_rule() {
+        // Mixed case: fajr = rule-INDEPENDENT fallback estimate, isha =
+        // Undefined. The strip must not claim Isha is estimated, and must
+        // not attribute the fallback to a rule (identical under all three).
+        let prov = provenance(
+            NaiveDate::from_ymd_opt(2027, 12, 21).unwrap(),
+            tromsco(),
+            &PrayerConfig::default(),
+        );
+        let (title, body) = explain_strip("Tromsø", "Middle of the night", &prov, false).unwrap();
+        assert_eq!(title, "Polar night in Tromsø");
+        assert!(
+            body.contains("Fajr is estimated."),
+            "plain estimate: {body}"
+        );
+        assert!(!body.contains("using"), "no rule attribution: {body}");
+        assert!(
+            body.contains("Isha has no defined time."),
+            "honest Isha: {body}"
+        );
+        assert!(!body.contains("Fajr and Isha are estimated"), "{body}");
+    }
+
+    #[test]
+    fn oslo_june_strip_names_only_fajr_with_the_rule() {
+        // Mixed case: fajr = Rule (angle clamp), isha = Sun (90-min
+        // interval under the default UmmAlQura). Isha must not be named
+        // as estimated.
+        let prov = provenance(
+            NaiveDate::from_ymd_opt(2027, 6, 21).unwrap(),
+            Coordinates::new(59.9139, 10.7522),
+            &PrayerConfig::default(),
+        );
+        let (title, body) = explain_strip("Oslo", "Middle of the night", &prov, false).unwrap();
+        assert_eq!(title, "Some times are estimated");
+        assert!(
+            body.contains("Fajr is estimated using Middle of the night."),
+            "{body}"
+        );
+        assert!(!body.contains("Isha"), "Isha is Sun-computed: {body}");
+    }
+
+    #[test]
+    fn tromsoe_june_strip_says_both_undefined_without_estimates() {
+        let prov = provenance(
+            NaiveDate::from_ymd_opt(2027, 6, 21).unwrap(),
+            tromsco(),
+            &PrayerConfig::default(),
+        );
+        let (_, body) = explain_strip("Tromsø", "Middle of the night", &prov, false).unwrap();
+        assert!(
+            body.contains("Fajr and Isha have no defined time."),
+            "{body}"
+        );
+        assert!(!body.contains("estimated"), "{body}");
+    }
+
+    #[test]
+    fn normal_city_has_no_strip() {
+        let prov = provenance(
+            NaiveDate::from_ymd_opt(2027, 6, 21).unwrap(),
+            Coordinates::new(24.7136, 46.6753),
+            &PrayerConfig::default(),
+        );
+        assert!(explain_strip("Riyadh", "Middle of the night", &prov, false).is_none());
+    }
+
+    #[test]
+    fn moonsighting_strip_does_not_claim_angle_failure() {
+        // Moonsighting >=55 deg substitutes SEASONAL estimates — the strip
+        // must not say the sun never reaches the twilight angle.
+        let cfg = PrayerConfig {
+            method: Method::MoonsightingCommittee,
+            ..Default::default()
+        };
+        let prov = provenance(
+            NaiveDate::from_ymd_opt(2027, 6, 21).unwrap(),
+            Coordinates::new(59.9139, 10.7522),
+            &cfg,
+        );
+        let (_, body) = explain_strip("Oslo", "Middle of the night", &prov, true).unwrap();
+        assert!(body.contains("seasonal estimates"), "{body}");
+        assert!(!body.contains("never reaches the twilight angle"), "{body}");
     }
 
     #[test]

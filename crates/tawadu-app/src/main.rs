@@ -27,8 +27,8 @@ use tawadu_core::locations::{push_recent, timezone_list, validate_coordinates};
 use tawadu_core::mosques::effective_iqamah;
 use tawadu_core::notify::{self, NotificationKind};
 use tawadu_core::prayer::{
-    self, provenance, HighLatitudeRule, Madhab, Method, PolarState, Prayer, PrayerTimes, Rounding,
-    TimeSource,
+    self, explain_strip, provenance, HighLatitudeRule, Madhab, Method, Prayer, PrayerTimes,
+    Rounding, TimeSource,
 };
 use tawadu_core::scheduler::{self, EventKind, Timeline};
 use tawadu_core::settings::{AudioSettings, EventVoice, Language, PlaybackMode, Settings, Theme};
@@ -488,51 +488,16 @@ fn apply_home(ui: &MainWindow, state: &AppState) {
         HighLatitudeRule::SeventhOfTheNight => "Seventh of the night",
         HighLatitudeRule::TwilightAngle => "Twilight angle",
     };
-    let any_estimated = [
-        prov.fajr,
-        prov.sunrise,
-        prov.dhuhr,
-        prov.asr,
-        prov.maghrib,
-        prov.isha,
-    ]
-    .contains(&TimeSource::Rule);
-    let (explain_visible, explain_title, explain_body) = match prov.polar {
-        Some(PolarState::Day) => (
-            true,
-            format!("Midnight sun in {}", location.name),
-            format!(
-                "{} is inside the polar circle. At this time of year the sun never sets, so there is no sunrise or sunset to compute. {}",
-                location.name,
-                if prov.fajr == TimeSource::Rule || prov.isha == TimeSource::Rule {
-                    format!("Fajr and Isha are estimated using {rule_label}.")
-                } else {
-                    "Fajr and Isha have no defined time either.".to_string()
-                }
-            ),
-        ),
-        Some(PolarState::Night) => (
-            true,
-            format!("Polar night in {}", location.name),
-            format!(
-                "{} is inside the polar circle. At this time of year the sun never rises, so there is no sunrise or sunset to compute. {}",
-                location.name,
-                if prov.fajr == TimeSource::Rule || prov.isha == TimeSource::Rule {
-                    format!("Fajr and Isha are estimated using {rule_label}.")
-                } else {
-                    "Fajr and Isha have no defined time either.".to_string()
-                }
-            ),
-        ),
-        None if any_estimated => (
-            true,
-            "Some times are estimated".to_string(),
-            format!(
-                "The sun never reaches the twilight angle here today, so Fajr and Isha are estimated using {rule_label}. Sunrise and sunset are sun-computed."
-            ),
-        ),
-        None => (false, String::new(), String::new()),
-    };
+    // Sentinel F1: the strip is composed PER EVENT by the core from the
+    // provenance (engine-bound, unit-tested for both mixed exit-gate cases)
+    // — never a template that names events the engine contradicts.
+    let moonsighting_substituted = state.settings.config.method == Method::MoonsightingCommittee
+        && location.coordinates.latitude.abs() >= 55.0;
+    let (explain_visible, explain_title, explain_body) =
+        match explain_strip(&location.name, rule_label, &prov, moonsighting_substituted) {
+            Some((t, b)) => (true, t, b),
+            None => (false, String::new(), String::new()),
+        };
     ui.set_explain_visible(explain_visible);
     ui.set_explain_title(explain_title.into());
     ui.set_explain_body(explain_body.into());
