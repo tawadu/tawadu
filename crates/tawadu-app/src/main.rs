@@ -846,6 +846,108 @@ fn discard_unnamed_mosque(state: &mut AppState, id: &str) {
     }
 }
 
+/// F4 (Sentinel delta): the SOLE persistence gate for mosque edits —
+/// EN name, AR name, per-prayer offsets. Named → save (create-on-first-
+/// name); unnamed → never persisted, and any row a previous keystroke or
+/// an older build left behind is deleted. Invariant: no `save_mosque`
+/// call site exists outside this gate.
+fn persist_mosque_edit(state: &mut AppState, id: &str) {
+    let named = state
+        .mosques
+        .iter()
+        .find(|m| m.id == id)
+        .map(|m| m.is_named())
+        .unwrap_or(false);
+    if let Some(storage) = &state.storage {
+        if named {
+            if let Some(m) = state.mosques.iter().find(|m| m.id == id) {
+                let _ = storage.save_mosque(m);
+            }
+        } else {
+            // Unnamed never STAYS persisted: clear the row an older
+            // build's unconditional save may have left behind.
+            let _ = storage.delete_mosque(id);
+        }
+    }
+}
+
+/// F4 (Sentinel delta): EN-name edit, funneled through the single gate.
+fn set_mosque_name(state: &mut AppState, id: &str, name: &str) -> bool {
+    if let Some(m) = state.mosques.iter_mut().find(|m| m.id == id) {
+        m.name = name.to_string();
+        persist_mosque_edit(state, id);
+        true
+    } else {
+        false
+    }
+}
+
+/// F4 (Sentinel delta): AR-name edit — same gate as the EN name. An
+/// Arabic name alone does not name a profile (activation keys on the
+/// EN name), so it must not persist one either.
+fn set_mosque_name_ar(state: &mut AppState, id: &str, name: &str) -> bool {
+    if let Some(m) = state.mosques.iter_mut().find(|m| m.id == id) {
+        m.name_ar = name.to_string();
+        persist_mosque_edit(state, id);
+        true
+    } else {
+        false
+    }
+}
+
+/// F4 (Sentinel delta): per-prayer offset edit — same gate; the stepper
+/// never persists an unnamed draft.
+fn set_mosque_offset(state: &mut AppState, id: &str, prayer: &str, value: i64) -> bool {
+    if let Some(m) = state.mosques.iter_mut().find(|m| m.id == id) {
+        match prayer {
+            "fajr" => m.offsets.fajr = value.clamp(0, 60),
+            "dhuhr" => m.offsets.dhuhr = value.clamp(0, 60),
+            "asr" => m.offsets.asr = value.clamp(0, 60),
+            "maghrib" => m.offsets.maghrib = value.clamp(0, 60),
+            "isha" => m.offsets.isha = value.clamp(0, 60),
+            _ => return false,
+        }
+        persist_mosque_edit(state, id);
+        true
+    } else {
+        false
+    }
+}
+
+/// F4 (Sentinel delta): starting a new draft first discards any previous
+/// UNNAMED draft — Add never orphans an in-flight draft. Named profiles
+/// are untouched (they already persisted).
+fn begin_mosque_draft(state: &mut AppState, current_editing: &str) -> String {
+    if !current_editing.is_empty() {
+        discard_unnamed_mosque(state, current_editing);
+    }
+    add_mosque_draft(state)
+}
+
+/// F4 (Sentinel delta), defense in depth at load: unnamed rows an older
+/// build's unconditional saves may have persisted are dropped from memory
+/// AND deleted from storage; an active pointer at a dropped row is
+/// disarmed (None). A pointer already dangling is left alone —
+/// `effective_iqamah` falls back honestly.
+fn prune_unnamed_mosques(
+    storage: Option<&Storage>,
+    mosques: Vec<tawadu_core::mosques::MosqueProfile>,
+    active_mosque: Option<String>,
+) -> (Vec<tawadu_core::mosques::MosqueProfile>, Option<String>) {
+    let mut active_mosque = active_mosque;
+    for m in mosques.iter().filter(|m| !m.is_named()) {
+        if let Some(storage) = storage {
+            let _ = storage.delete_mosque(&m.id);
+        }
+        if active_mosque.as_deref() == Some(m.id.as_str()) {
+            active_mosque = None;
+        }
+    }
+    let keep: Vec<tawadu_core::mosques::MosqueProfile> =
+        mosques.into_iter().filter(|m| m.is_named()).collect();
+    (keep, active_mosque)
+}
+
 fn mosques_model(state: &AppState) -> ModelRc<MosqueProfile> {
     let rows: Vec<MosqueProfile> = state
         .mosques
@@ -2056,10 +2158,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let initial_mosques = storage
-        .as_ref()
-        .and_then(|s| s.load_mosques().ok())
-        .unwrap_or_default();
+    // F4 delta (Sentinel): legacy builds persisted unnamed drafts — prune
+    // them from memory AND storage at load, disarming a stale active
+    // pointer at a dropped row.
+    let (initial_mosques, active_mosque) = prune_unnamed_mosques(
+        storage.as_ref(),
+        storage
+            .as_ref()
+            .and_then(|s| s.load_mosques().ok())
+            .unwrap_or_default(),
+        settings.active_mosque.clone(),
+    );
+    settings.active_mosque = active_mosque;
     let state = Arc::new(Mutex::new(AppState {
         settings,
         storage,
@@ -2765,8 +2875,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_add_mosque(move || {
             if let Some(ui) = weak.upgrade() {
                 let mut s = state.lock().unwrap();
-                // F4: draft only — persistence waits for a real name.
-                let id = add_mosque_draft(&mut s);
+                // F4 delta (Sentinel): the new draft replaces any previous
+                // UNNAMED draft — nothing is orphaned; named profiles are
+                // untouched (already persisted).
+                let current = ui.get_editing_mosque().to_string();
+                let id = begin_mosque_draft(&mut s, &current);
                 *s.mosque_confirm.borrow_mut() = String::new();
                 ui.set_editing_mosque(id.into());
                 ui.set_mosque_name_hint(false);
@@ -2833,23 +2946,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Plain &mut AppState: MutexGuard deref would defeat the
                 // field-disjoint borrows (mosques mut + storage imm).
                 let s = &mut *guard;
-                let updated = {
-                    if let Some(m) = s.mosques.iter_mut().find(|m| m.id == id.as_str()) {
-                        m.name = name.to_string();
-                        if let Some(storage) = &s.storage {
-                            if m.is_named() {
-                                // Create-on-first-name (F4).
-                                let _ = storage.save_mosque(m);
-                            } else {
-                                // Emptied again: unnamed never stays persisted.
-                                let _ = storage.delete_mosque(&m.id);
-                            }
-                        }
-                        true
-                    } else {
-                        false
-                    }
-                };
+                // F4 delta (Sentinel): the edit funnels through the single
+                // persistence gate — unnamed never persists.
+                let updated = set_mosque_name(s, id.as_str(), name.as_str());
                 if updated {
                     s.changed();
                     ui.set_mosque_name_hint(false);
@@ -2868,17 +2967,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Plain &mut AppState: MutexGuard deref would defeat the
                 // field-disjoint borrows (mosques mut + storage imm).
                 let s = &mut *guard;
-                let updated = {
-                    if let Some(m) = s.mosques.iter_mut().find(|m| m.id == id.as_str()) {
-                        m.name_ar = name.to_string();
-                        if let Some(storage) = &s.storage {
-                            let _ = storage.save_mosque(m);
-                        }
-                        true
-                    } else {
-                        false
-                    }
-                };
+                // F4 delta (Sentinel): same gate as the EN name — an Arabic
+                // name alone must not persist an unnamed draft.
+                let updated = set_mosque_name_ar(s, id.as_str(), name.as_str());
                 if updated {
                     s.changed();
                     apply_home(&ui, s);
@@ -2896,27 +2987,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Plain &mut AppState: MutexGuard deref would defeat the
                 // field-disjoint borrows (mosques mut + storage imm).
                 let s = &mut *guard;
-                let value = value.clamp(0, 60) as i64;
-                let updated = {
-                    if let Some(m) = s.mosques.iter_mut().find(|m| m.id == id.as_str()) {
-                        match prayer.as_str() {
-                            "fajr" => m.offsets.fajr = value,
-                            "dhuhr" => m.offsets.dhuhr = value,
-                            "asr" => m.offsets.asr = value,
-                            "maghrib" => m.offsets.maghrib = value,
-                            "isha" => m.offsets.isha = value,
-                            _ => return,
-                        }
-                        if let Some(storage) = &s.storage {
-                            let _ = storage.save_mosque(m);
-                        }
-                        true
-                    } else {
-                        false
-                    }
-                };
+                // F4 delta (Sentinel): same gate — the stepper never
+                // persists an unnamed draft.
+                let updated = set_mosque_offset(s, id.as_str(), prayer.as_str(), value as i64);
                 if updated {
                     s.changed();
+                    // The iqaamah times moved, so the day timeline did:
+                    // recompute now rather than at the end of the slice.
                     if let Some(wake) = &s.wake {
                         let _ = wake.send(());
                     }
@@ -4183,6 +4260,177 @@ mod tests {
         }
         discard_unnamed_mosque(&mut s, &id);
         assert_eq!(s.mosques.len(), 1, "named profile stays");
+        assert_eq!(s.storage.as_ref().unwrap().load_mosques().unwrap().len(), 1);
+    }
+
+    // ---- F4 delta (Sentinel): every mosque edit path is gated ----
+
+    #[test]
+    fn offset_edit_on_unnamed_draft_never_persists() {
+        // Sentinel F4 delta: the offset stepper must not persist an
+        // unnamed draft, and the edit stays live in memory.
+        let mut s = athkar_fixture("2026-11-19", Context::Morning, false);
+        let id = add_mosque_draft(&mut s);
+        assert!(set_mosque_offset(&mut s, &id, "fajr", 15), "edit applies");
+        assert!(
+            s.mosques.iter().any(|m| m.id == id && m.offsets.fajr == 15),
+            "the edit is live in memory"
+        );
+        assert!(
+            s.storage
+                .as_ref()
+                .unwrap()
+                .load_mosques()
+                .unwrap()
+                .is_empty(),
+            "an unnamed draft must NOT reach storage via the offset stepper"
+        );
+    }
+
+    #[test]
+    fn ar_name_edit_on_unnamed_draft_never_persists() {
+        // Sentinel F4 delta: an Arabic name alone does not name a
+        // profile (activation keys on the EN name), so it must not
+        // persist either.
+        let mut s = athkar_fixture("2026-11-19", Context::Morning, false);
+        let id = add_mosque_draft(&mut s);
+        assert!(
+            set_mosque_name_ar(&mut s, &id, "مسجد النور"),
+            "edit applies"
+        );
+        assert!(
+            s.mosques
+                .iter()
+                .any(|m| m.id == id && m.name_ar == "مسجد النور"),
+            "the edit is live in memory"
+        );
+        assert!(
+            s.storage
+                .as_ref()
+                .unwrap()
+                .load_mosques()
+                .unwrap()
+                .is_empty(),
+            "an unnamed draft must NOT reach storage via the Arabic name"
+        );
+    }
+
+    #[test]
+    fn named_profile_survives_ar_and_offset_edits() {
+        // Positive control: the gate must not over-block a real profile —
+        // every edit path persists once the EN name is set.
+        let mut s = athkar_fixture("2026-11-19", Context::Morning, false);
+        let id = add_mosque_draft(&mut s);
+        assert!(set_mosque_name(&mut s, &id, "Al-Noor"));
+        assert!(set_mosque_name_ar(&mut s, &id, "مسجد النور"));
+        assert!(set_mosque_offset(&mut s, &id, "fajr", 15));
+        let rows = s.storage.as_ref().unwrap().load_mosques().unwrap();
+        assert_eq!(rows.len(), 1, "named profile persists");
+        assert_eq!(rows[0].name, "Al-Noor");
+        assert_eq!(rows[0].name_ar, "مسجد النور");
+        assert_eq!(rows[0].offsets.fajr, 15);
+    }
+
+    #[test]
+    fn emptying_the_name_removes_the_row_again() {
+        // Sentinel invariant: unnamed never STAYS persisted — a profile
+        // whose name is emptied after being saved is deleted, not saved.
+        let mut s = athkar_fixture("2026-11-19", Context::Morning, false);
+        let id = add_mosque_draft(&mut s);
+        assert!(set_mosque_name(&mut s, &id, "Al-Noor"));
+        assert_eq!(s.storage.as_ref().unwrap().load_mosques().unwrap().len(), 1);
+        assert!(set_mosque_name(&mut s, &id, ""));
+        assert!(
+            s.storage
+                .as_ref()
+                .unwrap()
+                .load_mosques()
+                .unwrap()
+                .is_empty(),
+            "emptying the name deletes the persisted row"
+        );
+    }
+
+    #[test]
+    fn legacy_unnamed_rows_are_pruned_from_storage_on_load() {
+        // Sentinel F4 delta, defense in depth: a row an older build's
+        // unconditional save persisted unnamed is dropped from memory AND
+        // storage at load, and an active pointer at it is disarmed.
+        let storage = Storage::open_in_memory().unwrap();
+        let legacy = tawadu_core::mosques::MosqueProfile::new("legacy-unnamed".into());
+        storage.save_mosque(&legacy).unwrap();
+        let mut named = tawadu_core::mosques::MosqueProfile::new("m1".into());
+        named.name = "Al-Noor".into();
+        storage.save_mosque(&named).unwrap();
+        assert_eq!(
+            storage.load_mosques().unwrap().len(),
+            2,
+            "fixture: both rows persisted"
+        );
+
+        let (keep, active) = prune_unnamed_mosques(
+            Some(&storage),
+            storage.load_mosques().unwrap(),
+            Some("legacy-unnamed".into()),
+        );
+        assert_eq!(keep.len(), 1, "named rows survive the prune");
+        assert_eq!(keep[0].id, "m1");
+        assert!(
+            storage.load_mosques().unwrap().iter().all(|m| m.id == "m1"),
+            "the unnamed row is deleted from storage"
+        );
+        assert!(active.is_none(), "active at a dropped row is disarmed");
+
+        // Active at the NAMED row survives the prune.
+        let (_, active2) = prune_unnamed_mosques(
+            Some(&storage),
+            storage.load_mosques().unwrap(),
+            Some("m1".into()),
+        );
+        assert_eq!(active2.as_deref(), Some("m1"));
+    }
+
+    #[test]
+    fn add_discards_the_previous_unnamed_draft() {
+        // Sentinel F4 delta: Add never orphans an in-flight unnamed draft.
+        // The old draft carries an AR-name marker, so the survivor being
+        // FRESH proves discard+re-add even if both drafts land on the same
+        // millisecond id (ids are timestamp-based).
+        let mut s = athkar_fixture("2026-11-19", Context::Morning, false);
+        let a = begin_mosque_draft(&mut s, "");
+        assert!(s.mosques.iter().any(|m| m.id == a), "first draft is live");
+        set_mosque_name_ar(&mut s, &a, "مسجد تجريبي");
+        let b = begin_mosque_draft(&mut s, &a);
+        assert_eq!(s.mosques.len(), 1, "exactly one draft survives");
+        assert_eq!(s.mosques[0].id, b, "the survivor is the new draft");
+        assert!(
+            s.mosques[0].name_ar.is_empty(),
+            "the survivor is FRESH — the marked old draft was discarded"
+        );
+        assert!(s
+            .storage
+            .as_ref()
+            .unwrap()
+            .load_mosques()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn add_keeps_a_named_profile_and_starts_a_new_draft() {
+        // The draft discard must not touch a persisted named profile.
+        let mut s = athkar_fixture("2026-11-19", Context::Morning, false);
+        let a = begin_mosque_draft(&mut s, "");
+        set_mosque_name(&mut s, &a, "Al-Noor");
+        let b = begin_mosque_draft(&mut s, &a);
+        assert!(
+            s.mosques.iter().any(|m| m.name == "Al-Noor"),
+            "named profile untouched"
+        );
+        assert!(
+            s.mosques.iter().any(|m| m.id == b && !m.is_named()),
+            "a fresh unnamed draft is live"
+        );
         assert_eq!(s.storage.as_ref().unwrap().load_mosques().unwrap().len(), 1);
     }
 

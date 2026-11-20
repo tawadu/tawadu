@@ -541,8 +541,8 @@ pub fn provenance(date: NaiveDate, coordinates: Coordinates, config: &PrayerConf
 /// Honest variance figure (Sentinel F2, Atlas decision 1): today's MAX
 /// Fajr/Isha spread across the supported named methods at this location,
 /// rounded to the nearest minute. None when no event has two computable
-/// method times (e.g. polar midsummer) or the spread is zero — the UI then
-/// renders a non-numeric fallback, NEVER a typed-in constant. Pure.
+/// method times (e.g. polar midsummer) or the spread is sub-minute — the
+/// UI then renders a non-numeric fallback, NEVER a typed-in constant. Pure.
 pub fn method_spread_minutes(
     date: NaiveDate,
     coordinates: Coordinates,
@@ -589,11 +589,23 @@ pub fn method_spread_minutes(
         .into_iter()
         .flatten()
         .max()?;
+    // Nearest-minute rounding (honest: never overstate precision);
+    // sub-minute spreads fall to the same honest None (n-a).
+    round_spread_minutes(secs)
+}
+
+/// n-a: round a seconds spread to the nearest minute; sub-minute (or
+/// non-positive) spreads return None — the UI's honest fallback, NEVER
+/// "about 0 minutes".
+fn round_spread_minutes(secs: i64) -> Option<u32> {
     if secs <= 0 {
         return None;
     }
-    // Nearest-minute rounding (honest: never overstate precision).
-    Some(((secs + 30) / 60) as u32)
+    let minutes = (secs + 30) / 60;
+    if minutes <= 0 {
+        return None;
+    }
+    Some(minutes as u32)
 }
 
 /// Compose the explanation strip PER EVENT from the provenance (Sentinel
@@ -698,6 +710,21 @@ pub fn explain_strip(
 mod tests {
     use super::*;
     use chrono::{DateTime, Duration, NaiveDate, TimeZone, Timelike, Utc};
+
+    // n-a (Sentinel nit): nearest-minute rounding must never emit 0 —
+    // sub-minute and non-positive spreads fall to the same honest None as
+    // a true zero spread.
+    #[test]
+    fn round_spread_minutes_never_emits_zero() {
+        assert_eq!(round_spread_minutes(0), None);
+        assert_eq!(round_spread_minutes(-5), None, "negative is impossible");
+        assert_eq!(round_spread_minutes(29), None, "sub-30s rounds to 0 → None");
+        assert_eq!(round_spread_minutes(30), Some(1), "half a minute rounds up");
+        assert_eq!(round_spread_minutes(59), Some(1));
+        assert_eq!(round_spread_minutes(60), Some(1));
+        assert_eq!(round_spread_minutes(90), Some(2));
+        assert_eq!(round_spread_minutes(3600), Some(60));
+    }
 
     fn mins(time: Option<DateTime<Utc>>, offset_hours: i64) -> i64 {
         let local = time.unwrap() + Duration::hours(offset_hours);
