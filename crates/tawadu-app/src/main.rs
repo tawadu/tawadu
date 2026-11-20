@@ -118,6 +118,10 @@ struct PickerUi {
     pending_query: Option<String>,
     results: Vec<CityHit>,
     highlight: i32,
+    /// N10: sequence of the newest search result already rendered. A result
+    /// older than this is discarded, so a slow search cannot overwrite a
+    /// newer one.
+    applied_seq: u64,
 }
 
 struct AthkarUi {
@@ -150,6 +154,9 @@ struct AppState {
     /// Bundled GeoNames city DB (Phase 5). None = fail-soft: the picker
     /// says so honestly and manual coordinates still work.
     city_db: Option<CityDb>,
+    /// N10: the off-thread search worker (owns its own DB connection). None
+    /// only if the bundled DB path cannot be resolved at all.
+    city_search: Option<CitySearchWorker>,
     picker: std::cell::RefCell<PickerUi>,
     /// Mosque profiles (Phase 5 v1: name + offsets; storage v4 is the
     /// source of truth, this is the UI/scheduler cache).
@@ -720,34 +727,110 @@ fn recents_model(state: &AppState) -> ModelRc<CityResult> {
     ModelRc::new(VecModel::from(rows))
 }
 
-/// Run a picker search: prefix (+substring fallback) over the bundled DB,
+/// N10: the outcome of one picker search, posted back from the worker thread.
+enum PickerSearch {
+    Hits(Vec<CityHit>),
+    DbMissing,
+    Failed,
+}
+
+/// N10: the city search runs on its own thread. The substring fallback scans
+/// the whole alias table (~70 ms) and must never run on the UI thread. The
+/// worker owns a private read-only connection; queries and results carry a
+/// sequence number so a slow older search can never overwrite a newer one.
+struct CitySearchWorker {
+    tx: mpsc::Sender<(u64, String)>,
+    rx: mpsc::Receiver<(u64, String, PickerSearch)>,
+    next_seq: u64,
+}
+
+impl CitySearchWorker {
+    fn spawn() -> Option<Self> {
+        let path = city_db_path()?;
+        let (q_tx, q_rx) = mpsc::channel::<(u64, String)>();
+        let (r_tx, r_rx) = mpsc::channel::<(u64, String, PickerSearch)>();
+        std::thread::Builder::new()
+            .name("city-search".into())
+            .spawn(move || {
+                let db = match CityDb::open(&path) {
+                    Ok(db) => db,
+                    Err(e) => {
+                        log::error!("city search worker: cannot open the DB: {e}");
+                        // Fail-soft forever: answer every query honestly
+                        // rather than leaving the picker blank.
+                        while let Ok((seq, q)) = q_rx.recv() {
+                            if r_tx.send((seq, q, PickerSearch::DbMissing)).is_err() {
+                                break;
+                            }
+                        }
+                        return;
+                    }
+                };
+                while let Ok((seq, q)) = q_rx.recv() {
+                    let out = match db.search(&q, 50) {
+                        Ok(h) => PickerSearch::Hits(h),
+                        Err(e) => {
+                            log::error!("city search failed: {e}");
+                            PickerSearch::Failed
+                        }
+                    };
+                    if r_tx.send((seq, q, out)).is_err() {
+                        break;
+                    }
+                }
+            })
+            .ok()?;
+        Some(Self {
+            tx: q_tx,
+            rx: r_rx,
+            next_seq: 0,
+        })
+    }
+
+    fn submit(&mut self, query: String) {
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.wrapping_add(1);
+        let _ = self.tx.send((seq, query));
+    }
+
+    /// Newest result posted so far, if any.
+    fn poll(&self) -> Option<(u64, String, PickerSearch)> {
+        let mut latest = None;
+        while let Ok(msg) = self.rx.try_recv() {
+            latest = Some(msg);
+        }
+        latest
+    }
+}
+
+/// Render one picker search outcome: prefix (+substring fallback) hits,
 /// population-ranked, capped 50 with the honest cap caption; duplicate
 /// names get the disambiguation caption; every row carries country +
 /// admin1 · IANA zone (Rust-composed runs, never Slint arithmetic).
-fn run_picker_search(ui: &MainWindow, state: &AppState, query: &str) {
-    let Some(db) = &state.city_db else {
-        ui.set_picker_db_available(false);
-        // N2: Quill phase5-error-db-missing-title/body verbatim.
-        ui.set_picker_message("City database not found".into());
-        ui.set_picker_message_body(
-            "The app could not read its bundled city database. Reinstall the app to restore it."
-                .into(),
-        );
-        return;
-    };
-    ui.set_picker_db_available(true);
-    // N2: a DB ERROR is not "no results" — honest generic error copy.
-    let hits = match db.search(query, 50) {
-        Ok(h) => h,
-        Err(e) => {
-            log::error!("city search failed: {e}");
+fn apply_picker_results(ui: &MainWindow, state: &AppState, query: &str, outcome: PickerSearch) {
+    let hits = match outcome {
+        PickerSearch::DbMissing => {
+            ui.set_picker_db_available(false);
+            // N2: Quill phase5-error-db-missing-title/body verbatim.
+            ui.set_picker_message("City database not found".into());
+            ui.set_picker_message_body(
+                "The app could not read its bundled city database. Reinstall the app to restore it."
+                    .into(),
+            );
+            return;
+        }
+        // N2: a DB ERROR is not "no results" — honest generic error copy.
+        PickerSearch::Failed => {
+            ui.set_picker_db_available(true);
             ui.set_picker_message("Something went wrong".into());
             ui.set_picker_message_body(
                 "Try again; if it keeps happening, reinstall the app.".into(),
             );
             return;
         }
+        PickerSearch::Hits(hits) => hits,
     };
+    ui.set_picker_db_available(true);
     let disamb = if hits.len() > 1 {
         let name = hits[0].name.to_lowercase();
         let n = hits
@@ -2233,10 +2316,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None
             }
         },
+        city_search: CitySearchWorker::spawn(),
         picker: std::cell::RefCell::new(PickerUi {
             pending_query: None,
             results: Vec::new(),
             highlight: -1,
+            applied_seq: 0,
         }),
         mosques: initial_mosques,
         mosque_confirm: std::cell::RefCell::new(String::new()),
@@ -2485,11 +2570,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let state = Arc::clone(&state);
         ui.on_open_city_picker(move || {
             if let Some(ui) = weak.upgrade() {
-                let s = state.lock().unwrap();
+                let mut s = state.lock().unwrap();
                 ui.set_recent_cities(recents_model(&s));
                 ui.set_city_query("".into());
                 ui.set_manual_error("".into());
-                run_picker_search(&ui, &s, "");
+                if let Some(worker) = s.city_search.as_mut() {
+                    worker.submit(String::new());
+                }
                 ui.set_page("city-picker".into());
             }
         });
@@ -3427,8 +3514,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         apply_athkar(&ui, &guard, &location, &times);
     });
 
-    // City-picker search debounce (~150 ms, Prism §3): the expensive scan
-    // runs once per pause, never per keystroke.
+    // City-picker search debounce (~150 ms, Prism §3): the scan runs once
+    // per pause, never per keystroke — and since N10 it runs on the worker
+    // thread. This tick only submits the pending query and renders whatever
+    // result is newest.
     let picker_timer = Timer::default();
     {
         let handle = ui.as_weak();
@@ -3437,11 +3526,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let Some(ui) = handle.upgrade() else {
                 return;
             };
-            let s = picker_state.lock().unwrap();
+            let mut s = picker_state.lock().unwrap();
             let pending = s.picker.borrow_mut().pending_query.take();
             if let Some(q) = pending {
-                run_picker_search(&ui, &s, &q);
+                if let Some(worker) = s.city_search.as_mut() {
+                    worker.submit(q);
+                }
             }
+            // The worker borrow has ended; re-borrow immutably to poll.
+            let newest = s.city_search.as_ref().and_then(|w| w.poll());
+            drop(s);
+            let Some((seq, q, outcome)) = newest else {
+                return;
+            };
+            let s = picker_state.lock().unwrap();
+            if seq < s.picker.borrow().applied_seq {
+                return;
+            }
+            s.picker.borrow_mut().applied_seq = seq;
+            apply_picker_results(&ui, &s, &q, outcome);
         });
     }
 
@@ -4517,10 +4620,12 @@ mod tests {
             engine: None,
             corpus: Some(Corpus::bundled().unwrap()),
             city_db: None,
+            city_search: None,
             picker: std::cell::RefCell::new(PickerUi {
                 pending_query: None,
                 results: Vec::new(),
                 highlight: -1,
+                applied_seq: 0,
             }),
             mosques: Vec::new(),
             mosque_confirm: std::cell::RefCell::new(String::new()),

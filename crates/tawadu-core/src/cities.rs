@@ -71,6 +71,39 @@ pub fn normalize(s: &str) -> String {
     out
 }
 
+/// Escape the LIKE metacharacters (`%`, `_` and the escape character itself) so
+/// a user's punctuation is matched literally (N10). The pattern is built from
+/// the *normalized* query, so these three are the whole set.
+fn like_literal(q: &str) -> String {
+    let mut out = String::with_capacity(q.len() + 8);
+    for ch in q.chars() {
+        if ch == '\\' || ch == '%' || ch == '_' {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// Map a `cities` row onto a hit. The build gates every zone name against the
+/// app's chrono-tz (`unparseable_timezones()` asserts the empty set); a parse
+/// failure here would be a data bug — the UTC fallback keeps the app alive and
+/// is never silent in the suite.
+fn hit_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CityHit> {
+    let tz: String = row.get(8)?;
+    Ok(CityHit {
+        geonameid: row.get(0)?,
+        name: row.get(1)?,
+        name_ar: row.get(2)?,
+        country: row.get(3)?,
+        admin1: row.get(4)?,
+        population: row.get::<_, i64>(5)?.max(0) as u64,
+        latitude: row.get(6)?,
+        longitude: row.get(7)?,
+        timezone: tz.parse().unwrap_or(Tz::UTC),
+    })
+}
+
 /// The bundled city database (read-only at runtime).
 pub struct CityDb {
     conn: Connection,
@@ -119,11 +152,15 @@ impl CityDb {
         // prefix pass is sparse — a LIKE scan is the expensive path, so it
         // stays off the common keystroke.
         if !q.is_empty() && ids.len() < 10 {
-            let like = format!("%{q}%");
+            // N10: `%` and `_` are LIKE metacharacters, not literals. Left
+            // unescaped they match everything (a query of "%" returned 400 rows
+            // per table and 50 noise hits); escaped they match only a city whose
+            // normalized name genuinely contains one, which is none.
+            let like = format!("%{}%", like_literal(&q));
             for sql in [
-                "SELECT geonameid FROM cities WHERE name_norm LIKE ?1 LIMIT 400",
-                "SELECT geonameid FROM cities WHERE ascii_norm LIKE ?1 LIMIT 400",
-                "SELECT geonameid FROM aliases WHERE alias_norm LIKE ?1 LIMIT 400",
+                "SELECT geonameid FROM cities WHERE name_norm LIKE ?1 ESCAPE '\\' LIMIT 400",
+                "SELECT geonameid FROM cities WHERE ascii_norm LIKE ?1 ESCAPE '\\' LIMIT 400",
+                "SELECT geonameid FROM aliases WHERE alias_norm LIKE ?1 ESCAPE '\\' LIMIT 400",
             ] {
                 let mut stmt = self.conn.prepare(sql)?;
                 let rows = stmt.query_map(params![like], |r| r.get::<_, u32>(0))?;
@@ -134,34 +171,23 @@ impl CityDb {
         }
         ids.sort_unstable();
         ids.dedup();
+        // N10: one query per chunk instead of one query per id. The old loop ran
+        // a primary-key lookup per hit (572 ids = 16.3 ms); the same rows via a
+        // single `IN (...)` cost 0.8 ms. Chunked to stay far below SQLite's
+        // host-parameter limit.
         let mut hits = Vec::new();
-        for id in ids {
-            let hit = self.conn.query_row(
+        for chunk in ids.chunks(500) {
+            let placeholders = vec!["?"; chunk.len()].join(",");
+            let sql = format!(
                 "SELECT geonameid, name, name_ar, country, admin1, population,
                         latitude, longitude, timezone
-                 FROM cities WHERE geonameid = ?1",
-                params![id],
-                |r| {
-                    let tz: String = r.get(8)?;
-                    Ok(CityHit {
-                        geonameid: r.get(0)?,
-                        name: r.get(1)?,
-                        name_ar: r.get(2)?,
-                        country: r.get(3)?,
-                        admin1: r.get(4)?,
-                        population: r.get::<_, i64>(5)?.max(0) as u64,
-                        latitude: r.get(6)?,
-                        longitude: r.get(7)?,
-                        // The build gates every zone name against the app's
-                        // chrono-tz (unparseable_timezones() test asserts the
-                        // empty set); a parse failure here would be a data
-                        // bug — UTC fallback keeps the app alive, never silent
-                        // in the suite.
-                        timezone: tz.parse().unwrap_or(Tz::UTC),
-                    })
-                },
-            )?;
-            hits.push(hit);
+                 FROM cities WHERE geonameid IN ({placeholders})"
+            );
+            let mut stmt = self.conn.prepare(&sql)?;
+            let mut rows = stmt.query(rusqlite::params_from_iter(chunk.iter()))?;
+            while let Some(row) = rows.next()? {
+                hits.push(hit_from_row(row)?);
+            }
         }
         hits.sort_by(|a, b| {
             b.population
@@ -181,20 +207,7 @@ impl CityDb {
                         latitude, longitude, timezone
                  FROM cities WHERE geonameid = ?1",
                 params![geonameid],
-                |r| {
-                    let tz: String = r.get(8)?;
-                    Ok(CityHit {
-                        geonameid: r.get(0)?,
-                        name: r.get(1)?,
-                        name_ar: r.get(2)?,
-                        country: r.get(3)?,
-                        admin1: r.get(4)?,
-                        population: r.get::<_, i64>(5)?.max(0) as u64,
-                        latitude: r.get(6)?,
-                        longitude: r.get(7)?,
-                        timezone: tz.parse().unwrap_or(Tz::UTC),
-                    })
-                },
+                hit_from_row,
             )
             .optional()?;
         Ok(hit)
@@ -330,6 +343,43 @@ mod tests {
         // Arabic substring: ياض inside الرياض.
         let hits = db().search("ياض", 20).unwrap();
         assert!(hits.iter().any(|h| h.geonameid == 108410));
+    }
+
+    #[test]
+    fn like_metacharacters_are_matched_literally_not_as_wildcards() {
+        // N10: `%` and `_` are LIKE metacharacters. Unescaped, both matched
+        // every row (172,046 in `cities` alone; 400 per table) and the picker
+        // surfaced a full page of populous cities that matched nothing.
+        // Escaped, `%` matches nothing at all and `_` matches only the 93
+        // GeoNames aliases that genuinely contain one — never a full page.
+        assert!(
+            db().search("%", 200).unwrap().is_empty(),
+            "a literal '%' matches no normalized name"
+        );
+        let underscores = db().search("_", 200).unwrap().len();
+        assert!(
+            underscores < 200,
+            "a literal '_' must not match everything (got {underscores} hits)"
+        );
+        // The escape character itself must not break a normal query.
+        assert!(db()
+            .search("iyadh", 20)
+            .unwrap()
+            .iter()
+            .any(|h| h.geonameid == 108410));
+    }
+
+    #[test]
+    fn broad_query_fills_the_limit_sorted_and_unduplicated() {
+        // Exercises the chunked `IN (...)` lookup: a query with many matches
+        // must return a full page, population-ordered, with no duplicate ids.
+        let hits = db().search("al", 50).unwrap();
+        assert_eq!(hits.len(), 50, "a broad query must fill the limit");
+        assert!(hits.windows(2).all(|w| w[0].population >= w[1].population));
+        let mut ids: Vec<u32> = hits.iter().map(|h| h.geonameid).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), hits.len(), "no duplicate hits");
     }
 
     #[test]
