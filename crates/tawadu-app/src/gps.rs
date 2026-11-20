@@ -8,6 +8,13 @@
 //! discarded by core::locations::validate_fix before the confirm card.
 
 /// The outcome of one opt-in location read.
+///
+/// `Found`/`Denied` are constructed only by the Windows WinRT backend;
+/// other platforms honestly return `Unavailable` (no backend wired yet).
+/// The allow is scoped to THIS enum on non-Windows targets only — it does
+/// not mask dead code anywhere else, and Windows still compiles under
+/// plain `-D warnings`.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum GpsFix {
     Found { lat: f64, lon: f64 },
