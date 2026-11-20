@@ -8,6 +8,7 @@
 
 mod autostart;
 mod cli;
+mod gps;
 mod restore;
 mod tray;
 
@@ -2089,6 +2090,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // lifetime, dropped only when main returns after Quit.
     let _keepalive = tray::hold_event_loop()?;
     apply_theme(&ui, state.lock().unwrap().settings.theme);
+    ui.set_gps_available(cfg!(target_os = "windows"));
     apply_home(&ui, &state.lock().unwrap());
     apply_settings(&ui, &state.lock().unwrap());
     if let Some(message) = &warning {
@@ -2578,13 +2580,76 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         let weak = ui.as_weak();
         ui.on_use_gps(move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            if ui.get_gps_busy() {
+                return;
+            }
+            ui.set_gps_busy(true);
+            ui.set_gps_confirm_visible(false);
+            // Privacy caption doubles as the busy line (existing Quill key).
+            ui.set_picker_message(
+                "Read once, stays on this device. Nothing leaves this device.".into(),
+            );
+            ui.set_picker_message_body("".into());
+            let weak2 = ui.as_weak();
+            std::thread::spawn(move || {
+                let fix = gps::read_fix();
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(ui) = weak2.upgrade() else {
+                        return;
+                    };
+                    ui.set_gps_busy(false);
+                    match fix {
+                        gps::GpsFix::Found { lat, lon } => {
+                            ui.set_gps_lat(format!("{lat:.4}").into());
+                            ui.set_gps_lon(format!("{lon:.4}").into());
+                            ui.set_gps_confirm_visible(true);
+                            ui.set_picker_message("".into());
+                        }
+                        gps::GpsFix::Denied => {
+                            ui.set_picker_message(
+                                "Location permission denied — enter coordinates manually.".into(),
+                            );
+                        }
+                        gps::GpsFix::Unavailable => {
+                            ui.set_picker_message(
+                                "Location is unavailable on this device — enter coordinates manually.".into(),
+                            );
+                        }
+                        gps::GpsFix::Timeout => {
+                            ui.set_picker_message(
+                                "Taking too long — enter coordinates manually.".into(),
+                            );
+                        }
+                    }
+                });
+            });
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_gps_confirm(move || {
             if let Some(ui) = weak.upgrade() {
-                // GPS is Phase 5 slice 6 (opt-in Windows API). Until it
-                // lands the row is honestly unavailable — manual entry works.
+                // CONFIRMED fix prefills the manual form; the timezone is
+                // still chosen EXPLICITLY (never guessed from longitude).
+                ui.set_manual_lat(ui.get_gps_lat());
+                ui.set_manual_lon(ui.get_gps_lon());
+                ui.set_coords_open(true);
+                ui.set_gps_confirm_visible(false);
                 ui.set_picker_message(
-                    "Location is unavailable on this device — enter coordinates manually.".into(),
+                    "Coordinates filled in — choose a timezone, then apply.".into(),
                 );
                 ui.set_picker_message_body("".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_gps_cancel(move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_gps_confirm_visible(false);
             }
         });
     }

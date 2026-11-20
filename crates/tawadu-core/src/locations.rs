@@ -313,6 +313,14 @@ pub fn validate_coordinates(latitude: f64, longitude: f64) -> Result<(), &'stati
     Ok(())
 }
 
+/// A GPS fix must pass the SAME bounds as manual entry before it can be
+/// offered for confirmation — a device reading outside [-90,90]/[-180,180]
+/// or non-finite is discarded, never fabricated into a location. Pure.
+pub fn validate_fix(latitude: f64, longitude: f64) -> Option<(f64, f64)> {
+    validate_coordinates(latitude, longitude).ok()?;
+    Some((latitude, longitude))
+}
+
 /// The bundled IANA timezone set for the explicit manual-entry picker
 /// (chrono-tz's compiled tzdb — offline, sorted). Coordinates alone cannot
 /// honestly imply a zone; the user picks from this list.
@@ -396,6 +404,16 @@ mod tests {
             longitude: lon,
             timezone: "Asia/Riyadh".into(),
         }
+    }
+
+    #[test]
+    fn gps_fixes_are_validated_like_manual_entry() {
+        assert_eq!(validate_fix(24.7136, 46.6753), Some((24.7136, 46.6753)));
+        assert_eq!(validate_fix(-90.0, 180.0), Some((-90.0, 180.0)));
+        assert!(validate_fix(91.0, 0.0).is_none());
+        assert!(validate_fix(0.0, -181.0).is_none());
+        assert!(validate_fix(f64::NAN, 0.0).is_none());
+        assert!(validate_fix(0.0, f64::INFINITY).is_none());
     }
 
     #[test]

@@ -648,6 +648,10 @@ export component MainWindow inherits Window {
     in property <string> city_disambiguation;
     in property <bool> city_cap_visible;
     in property <bool> gps_available;
+    in property <bool> gps_busy;
+    in property <bool> gps_confirm_visible;
+    in property <string> gps_lat;
+    in property <string> gps_lon;
     in property <bool> picker_db_available;
     in-out property <bool> coords_open;
     in-out property <string> manual_lat;
@@ -754,6 +758,8 @@ export component MainWindow inherits Window {
     callback pick-recent(string);
     callback nav-result(int);
     callback use-gps();
+    callback gps-confirm();
+    callback gps-cancel();
     callback apply-coords(string, string, string, string);
     callback search-tz(string);
     callback pick-tz(string);
@@ -1960,7 +1966,29 @@ export component MainWindow inherits Window {
                             wrap: word-wrap;
                         }
                     }
-                    TouchArea { clicked => { use-gps(); } }
+                    TouchArea { clicked => { if (!gps_busy) { use-gps(); } } }
+                }
+                if (gps_confirm_visible) : Rectangle {
+                    background: Palette.surface-secondary;
+                    border-color: Palette.accent;
+                    border-width: 1px;
+                    border-radius: Palette.radius-small;
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 6px;
+                        Text { text: "Use these coordinates?"; font-size: 14px; font-weight: 600; color: Palette.ink; }
+                        Text {
+                            text: "Latitude " + gps_lat + ", longitude " + gps_lon + ". This becomes your location.";
+                            font-size: 12px;
+                            color: Palette.ink;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Action { label: "Use"; primary: true; triggered => { gps-confirm(); } }
+                            Action { label: "Cancel"; primary: false; triggered => { gps-cancel(); } }
+                        }
+                    }
                 }
                 Action {
                     label: "Enter coordinates manually";
