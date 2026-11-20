@@ -19,14 +19,17 @@ otherwise unmodified. The raw zip is NOT redistributed in this repository.
 
 Provenance (binding §8.1–8.3, §8.9 — re-verify with scripts/build_city_db.py):
   Source URL:   https://download.geonames.org/export/dump/cities1000.zip
-  Raw dump:     11,101,196 bytes
-                SHA-256 1dcfe6ea1731529fe53d54c8c524add5a8f4b198cff7ff0ab5e5b774d528db17
-                Last-Modified: Thu, 19 Nov 2026 02:52:31 GMT
-                ETag: "a9640c-6609838032c63"
-                (live-byte re-verified at build time, 2026-11-20 — no rotation)
-  Derived DB:   assets/cities.db — 41,771,008 bytes
-                SHA-256 640f86c48ed0ac11e7ae29a95d334cfd95e6d29eacc7286d725de88849dfdbcc
-                172,038 records · 807,526 alias keys · 392 distinct IANA
+  Raw dump:     11,101,525 bytes   (ROTATED 2026-11-20; prev pin 11,101,196 B
+                SHA-256 1dcfe6ea…8db17, LM 2026-11-19 02:52:31 GMT)
+                SHA-256 0770230481be281550b5dbea5da5bb1d090e56320eceef3643ea047f7cadf62f
+                Last-Modified: Fri, 20 Nov 2026 02:56:29 GMT
+                ETag: "a96555-660ac6409c204"
+                (live-byte re-verified at build time, 2026-11-20 — rotation
+                recorded in the ledger + licence entry in the same PR, §8.1)
+  Derived DB:   assets/cities.db — 41,766,912 bytes   (prev 41,771,008 B
+                SHA-256 640f86c4…dbcc)
+                SHA-256 68ff610c8a18461f1b29db1a941022d4dd973f87f721efc6c0e650ff9b41b408
+                172,046 records · 807,552 alias keys · 392 distinct IANA
                 timezones (all parse with the app's chrono-tz 0.10 — gated
                 by tawadu-core cities::tests) · 28/28 curated overrides.
   Build:        scripts/build_city_db.py (committed, stdlib only,

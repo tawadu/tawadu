@@ -13,6 +13,12 @@
 
 - Compiled: 2026-11-19 (Arab Standard Time) · Scope: bundled GeoNames-derived
   city database + search + optional GPS (Phase 5 task 1).
+- **Rotated: 2026-11-20** — the daily dump re-published at `Last-Modified: Fri,
+  20 Nov 2026 02:56:29 GMT` (11,101,525 B, SHA-256 `07702304…`). The pin, this
+  ledger and the licence entry were updated in the same PR
+  (`chore/city-db-rotation-20261120`); §1 / §1.3 / §1.4 / §2.2 / §7 below
+  carry the new live numbers (prev pin: 11,101,196 B, `1dcfe6ea…`, LM
+  2026-11-19 02:52:31 GMT). Rotation is recorded, not rejected (§8.1).
 - All licence claims below were re-fetched from the live sites on 2026-11-19;
   URLs and access date are given per claim. Nothing here is remembered from a
   previous session.
@@ -31,15 +37,15 @@
 | Licence page | https://creativecommons.org/licenses/by/4.0/ |
 | Dump readme (terms) | https://download.geonames.org/export/dump/readme.txt |
 | GeoNames terms page | https://www.geonames.org/export/ |
-| Bytes (zip) | **11,101,196** |
-| **SHA-256 (zip, live)** | **`1dcfe6ea1731529fe53d54c8c524add5a8f4b198cff7ff0ab5e5b774d528db17`** |
-| Bytes (inner `cities1000.txt`) | 32,092,517 |
-| SHA-256 (inner txt, live) | `d2e8118618ce8510c0f0dae658cd1d228da00c9ed19ad97863dfc0d8879a2bd0` |
-| `Last-Modified` served | `Thu, 19 Nov 2026 02:52:31 GMT` |
-| `ETag` served | `"a9640c-6609838032c63"` |
-| Records | **172,038** rows, all 19 fields, all feature class `P` |
+| Bytes (zip) | **11,101,525** |
+| **SHA-256 (zip, live)** | **`0770230481be281550b5dbea5da5bb1d090e56320eceef3643ea047f7cadf62f`** |
+| Bytes (inner `cities1000.txt`) | 32,094,159 |
+| SHA-256 (inner txt, live) | `c99e28ef3d77da17aa3bb970ae2bd44f4e2fe360d48bc7e670f5c2ffcd6b0c10` |
+| `Last-Modified` served | `Fri, 20 Nov 2026 02:56:29 GMT` |
+| `ETag` served | `"a96555-660ac6409c204"` |
+| Records | **172,046** rows, all 19 fields, all feature class `P` |
 | Inner filename | `cities1000.txt` (tab-delimited UTF-8, **no header row**) |
-| Update cadence | **daily** — the dump server re-publishes every day; `moddate` values in this file range `1993-12-10` … `2026-11-18` (i.e. the file is rebuilt daily but each row carries its own last-edit date) |
+| Update cadence | **daily** — the dump server re-publishes every day; `moddate` values in this file range `1993-12-10` … `2026-11-19` (i.e. the file is rebuilt daily but each row carries its own last-edit date) |
 | Verdict | **BUNDLE-OK** — CC BY 4.0 permits redistribution and bundling with attribution |
 
 ### 1.1 Licence verification (live, 2026-11-19)
@@ -105,25 +111,25 @@ file has exactly 19 fields:
 
 | # | Field | Type / note | Non-empty in live file |
 |---|---|---|---|
-| 1 | `geonameid` | integer, stable id | 172,038 / 172,038 |
-| 2 | `name` | name (UTF-8) | 172,038 |
-| 3 | `asciiname` | plain-ASCII form | 172,038 |
-| 4 | `alternatenames` | comma-separated, ASCII + transliterations | 144,642 |
-| 5 | `latitude` | decimal degrees, WGS84 | 172,038 |
-| 6 | `longitude` | decimal degrees, WGS84 | 172,038 |
-| 7 | `feature class` | `P` for all rows here | 172,038 |
-| 8 | `feature code` | `PPL`, `PPLA`, `PPLA2`…`PPLA5`, `PPLX`, … | 172,038 |
-| 9 | `country code` | ISO-3166 alpha-2 | 172,038 |
+| 1 | `geonameid` | integer, stable id | 172,046 / 172,046 |
+| 2 | `name` | name (UTF-8) | 172,046 |
+| 3 | `asciiname` | plain-ASCII form | 172,046 |
+| 4 | `alternatenames` | comma-separated, ASCII + transliterations | 144,649 |
+| 5 | `latitude` | decimal degrees, WGS84 | 172,046 |
+| 6 | `longitude` | decimal degrees, WGS84 | 172,046 |
+| 7 | `feature class` | `P` for all rows here | 172,046 |
+| 8 | `feature code` | `PPL`, `PPLA`, `PPLA2`…`PPLA5`, `PPLX`, … | 172,046 |
+| 9 | `country code` | ISO-3166 alpha-2 | 172,046 |
 | 10 | `cc2` | alternate country codes | 119 |
-| 11 | `admin1 code` | FIPS-style (ISO for US/CH/BE/ME) | 171,939 |
-| 12 | `admin2 code` | county-level | 150,395 |
-| 13 | `admin3 code` | | 88,886 |
-| 14 | `admin4 code` | | 21,754 |
-| 15 | `population` | bigint; `0` for 11,823 rows | 172,038 |
-| 16 | `elevation` | metres | 29,312 |
-| 17 | `dem` | digital elevation model | 172,038 |
-| 18 | `timezone` | **IANA timezone id** | **172,038 (0 empty)** |
-| 19 | `modification date` | `yyyy-MM-dd` | 172,038 |
+| 11 | `admin1 code` | FIPS-style (ISO for US/CH/BE/ME) | 171,947 |
+| 12 | `admin2 code` | county-level | 150,403 |
+| 13 | `admin3 code` | | 88,892 |
+| 14 | `admin4 code` | | 21,755 |
+| 15 | `population` | bigint; `0` for 11,823 rows | 172,046 |
+| 16 | `elevation` | metres | 29,315 |
+| 17 | `dem` | digital elevation model | 172,046 |
+| 18 | `timezone` | **IANA timezone id** | **172,046 (0 empty)** |
+| 19 | `modification date` | `yyyy-MM-dd` | 172,046 |
 
 **Correction to the task brief:** the brief listed `lat/lon, country code,
 admin1, population, timezone` — all present — but the actual column order is
@@ -142,23 +148,23 @@ can drop the column in the geoname table."* — see §2.
 
 ### 1.4 Live-file statistics (computed from the downloaded bytes)
 
-- 172,038 records; feature class `P` for 100%; top feature codes: `PPL`
-  98,508 · `PPLA3` 30,520 · `PPLA2` 23,376 · `PPLX` 9,717 · `PPLA4` 5,530 ·
+- 172,046 records; feature class `P` for 100%; top feature codes: `PPL`
+  98,514 · `PPLA3` 30,520 · `PPLA2` 23,376 · `PPLX` 9,719 · `PPLA4` 5,530 ·
   `PPLA` 3,476 · `PPLL` 450 · `PPLC` 241.
 - 246 distinct country codes.
-- Population: max 24,874,500; sum 4,578,875,334; 11,823 rows with `population`
+- Population: max 24,874,500; sum 4,577,180,748; 11,823 rows with `population`
   `0` (mostly seats of admin divisions that kept their place despite no
   counted population).
-- Coordinates: lat range `+78.22334` … `-54.93355`. **196 records above 66.5°N;
-  0 below −66.5°S.**
+- Coordinates: lat range `+78.22334` … `-54.93355`; lon range `−179.11838` …
+  `+179.36451`. **196 records above 66.5°N; 0 below −66.5°S.**
 - `timezone`: 392 distinct values, **0 empty**. All 392 parse successfully as
   `chrono_tz::Tz` (verified by running the app's own `chrono-tz 0.10`
   dependency against the extracted list: `parsed_ok=392 failed=0`). The
   GeoNames dump today carries only IANA names — no legacy numeric/offset forms
   and no `Etc/` entries.
-- Alternate names: 968,907 entries total; 6.7 per row on average; max 267 on a
-  single row.
-- 8,131 `(name, country)` groups have more than one row (14,135 extra rows) —
+- Alternate names: 968,937 entries total; 6.7 per row on average (among rows
+  that carry any); max 267 on a single row.
+- 8,127 `(name, country)` groups have more than one row (14,128 extra rows) —
   e.g. several villages share a name inside one country. **Search must
   disambiguate by country/admin, or show a list, never silently pick one.**
 - 0 duplicate `geonameid`s.
@@ -221,8 +227,8 @@ Live record from `cities1000.txt`:
 | IQ | 173 | 165 | 95% |
 | TR | 2,841 | 264 | 9% |
 | GB | 4,645 | 1,067 | 22% |
-| US | 17,345 | 10,586 | 61% |
-| NO | 533 | 50 | 9% |
+| US | 17,347 | 10,587 | 61% |
+| NO | 534 | 51 | 9% |
 | NZ | 647 | 40 | 6% |
 
 Saudi rows with **no** Arabic script in `alternatenames`, population > 50,000:
@@ -249,7 +255,7 @@ mode that makes "derive `name_ar` from `alternatenames`" unsafe.
 | Verdict | **CANDIDATE-LATER** — not needed for the v1 database; revisit only if Arabic display names must be exhaustive |
 
 **Why it is not needed for v1.** `cities1000.txt` already carries ~969 k
-alternate-name entries including Arabic script for 32,465 rows. The V2 file
+alternate-name entries including Arabic script for 32,468 rows. The V2 file
 adds **language tags and preferred/official flags** — which would let an
 importer pick "the Arabic name" deterministically — but at 19× the size of the
 city file and 205 MB uncompressed. The cost/benefit only makes sense if the
@@ -341,8 +347,8 @@ set.
 
 | Artifact | Bytes (measured) | Notes |
 |---|---|---|
-| `cities1000.zip` (as downloaded) | 11,101,196 | Already compressed; fine as a build-time source |
-| `cities1000.txt` (uncompressed) | 32,092,517 | Too big to embed verbatim |
+| `cities1000.zip` (as downloaded) | 11,101,525 | Already compressed; fine as a build-time source |
+| `cities1000.txt` (uncompressed) | 32,094,159 | Too big to embed verbatim |
 | **Trimmed TSV** — columns 1,2,3,5,6,9,11,15,18 only | **12,657,748** (12.66 MB) | Measured by rebuilding the projection from the live file |
 | **SQLite** with `asciiname` index | **17,313,792** (17.31 MB) | Measured with the project's own SQLite; page overhead + index |
 
@@ -453,7 +459,7 @@ output is `None`, and the UI must say so. The rule selector and the honest
 
 | ID | Candidate | Verdict |
 |---|---|---|
-| **G1** | GeoNames `cities1000.zip` — CC BY 4.0, 11,101,196 B, 172,038 rows, live hash recorded | **BUNDLE-OK** — v1 database |
+| **G1** | GeoNames `cities1000.zip` — CC BY 4.0, 11,101,525 B, 172,046 rows, live hash recorded | **BUNDLE-OK** — v1 database |
 | **G2** | GeoNames `alternateNamesV2.zip` — CC BY 4.0, 205,205,071 B, hash PENDING | **CANDIDATE-LATER** — only if exhaustive Arabic names become a requirement |
 | **A1** | SimpleMaps Basic — CC BY 4.0, ~50 k places | **REJECT** — subset of what we need; second attribution chain for no gain |
 | **A2** | SimpleMaps Pro/Comprehensive — "no redistribution" | **REJECT** — licence forbids bundling |
@@ -467,8 +473,9 @@ output is `None`, and the UI must say so. The rule selector and the honest
 ## 8. Binding conditions on the implementation PR (Atlas/Sentinel)
 
 1. **Re-verify against fresh LIVE bytes** before any asset commit: download
-   `cities1000.zip` again, compare SHA-256 to
-   `1dcfe6ea1731529fe53d54c8c524add5a8f4b198cff7ff0ab5e5b774d528db17`.
+   `cities1000.zip` again, compare SHA-256 to the current pin
+   `0770230481be281550b5dbea5da5bb1d090e56320eceef3643ea047f7cadf62f`
+   (a rotation updates this pin in the same PR; previous pin `1dcfe6ea…8db17`).
    A size match is not a content match (Phase-3 lesson). If the dump rotated
    (it is daily), record the new hash + `Last-Modified` and update this ledger
    in the same PR.

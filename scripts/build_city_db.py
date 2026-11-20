@@ -30,9 +30,11 @@ import urllib.request
 import zipfile
 
 URL = "https://download.geonames.org/export/dump/cities1000.zip"
-# Ledger docs/phase5-city-sources.md §1.4 / audit §2 (2026-11-19 live bytes).
-EXPECTED_SHA = "1dcfe6ea1731529fe53d54c8c524add5a8f4b198cff7ff0ab5e5b774d528db17"
-EXPECTED_BYTES = 11_101_196
+# Ledger docs/phase5-city-sources.md §1 / audit §2 — ROTATED 2026-11-20
+# (live pin 11,101,525 B, Last-Modified 2026-11-20 02:56:29 GMT; new hash +
+# Last-Modified recorded in the ledger + licence entry in the same PR, §8.1).
+EXPECTED_SHA = "0770230481be281550b5dbea5da5bb1d090e56320eceef3643ea047f7cadf62f"
+EXPECTED_BYTES = 11_101_525
 UA = {"User-Agent": "TawaduLicenceAudit/1.0 (https://github.com/tawadu/tawadu)"}
 
 ARABIC_DIACRITICS = set(range(0x064B, 0x0660)) | {0x0670, 0x0640}
