@@ -10,6 +10,24 @@ export struct Row {
     is_none: bool,     // Phase 5: genuinely undefined — em dash, info dot
 }
 
+// Phase 5 calendar (Prism §6/§8; both numbers engine-provided).
+export struct CalendarDay {
+    iso: string,
+    gregorian: int,
+    hijri: int,
+    in-month: bool,
+    is-today: bool,
+    is-ramadan: bool,
+}
+
+export struct DayTime {
+    name: string,
+    name-ar: string,
+    time: string,
+    estimated: bool,
+    is-none: bool,
+}
+
 // Phase 5 high-latitude rule rows (Prism §5.1, Quill §4.3 verbatim).
 export struct RuleOption {
     key: string,

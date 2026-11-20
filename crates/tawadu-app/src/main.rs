@@ -16,11 +16,11 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, NaiveTime, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, NaiveTime, Utc};
 use slint::{ModelRc, SharedString, Timer, TimerMode, VecModel};
 use tawadu_core::athkar::{self, Context, ContextTimes, Corpus};
 use tawadu_core::cities::{CityDb, CityHit};
-use tawadu_core::hijri::from_gregorian;
+use tawadu_core::hijri::{from_gregorian, HijriDate, TABLE_FIRST_YEAR, TABLE_LAST_YEAR};
 use tawadu_core::locations::{find_city, Location, CITIES};
 use tawadu_core::locations::{push_recent, timezone_list, validate_coordinates};
 use tawadu_core::mosques::effective_iqamah;
@@ -155,6 +155,13 @@ struct AppState {
     mosques: Vec<tawadu_core::mosques::MosqueProfile>,
     /// Two-step remove confirm: the id awaiting confirmation ("" = none).
     mosque_confirm: std::cell::RefCell<String>,
+    /// Calendar view state (Phase 5): the viewed month + selected day.
+    calendar: std::cell::RefCell<CalendarUi>,
+}
+
+struct CalendarUi {
+    anchor: NaiveDate,
+    selected: Option<NaiveDate>,
 }
 
 /// Decode a serde snake_case key back into a config value.
@@ -834,6 +841,116 @@ fn mosques_model(state: &AppState) -> ModelRc<MosqueProfile> {
 fn refresh_mosques_ui(ui: &MainWindow, state: &AppState) {
     ui.set_mosques(mosques_model(state));
     ui.set_mosque_remove_confirm(state.mosque_confirm.borrow().clone().into());
+}
+
+/// Render the calendar month: dual numbering (both engine values), today
+/// anchor, engine-bound navigation (Umm al-Qura table 1343–1500 AH — never
+/// an extrapolated guess), selected-day times with the same —/estimated
+/// honesty rules, and the Ramadan banner state (Prism §6, Quill §4.4).
+fn build_calendar(ui: &MainWindow, state: &AppState, location: &tawadu_core::locations::Location) {
+    let today = location.local(now()).date_naive();
+    let cal = state.calendar.borrow();
+    let first = cal.anchor.with_day(1).unwrap_or(today);
+    let start = first - chrono::Duration::days(i64::from(first.weekday().num_days_from_monday()));
+    let mut days = Vec::with_capacity(42);
+    for i in 0..42 {
+        let d = start + chrono::Duration::days(i);
+        let h = from_gregorian(d);
+        days.push(CalendarDay {
+            iso: d.format("%Y-%m-%d").to_string().into(),
+            gregorian: d.day() as i32,
+            hijri: h.map(|x| i32::from(x.day)).unwrap_or(0),
+            in_month: d.month() == first.month() && d.year() == first.year(),
+            is_today: d == today,
+            is_ramadan: h.map(|x| x.is_ramadan()).unwrap_or(false),
+        });
+    }
+    ui.set_calendar_days(ModelRc::new(VecModel::from(days)));
+    ui.set_calendar_month_label(first.format("%B %Y").to_string().into());
+    let mid_h = from_gregorian(first + chrono::Duration::days(14));
+    ui.set_calendar_month_label_ar(
+        mid_h
+            .map(|h| format!("{} {}", h.month_name_ar(), h.year))
+            .unwrap_or_default()
+            .into(),
+    );
+
+    // Engine bounds: the published table's first/last Gregorian days.
+    let bound_first = HijriDate::new(TABLE_FIRST_YEAR, 1, 1)
+        .and_then(|h| h.to_gregorian())
+        .unwrap_or_else(|| NaiveDate::from_ymd_opt(1924, 7, 31).unwrap());
+    let bound_last = HijriDate::new(TABLE_LAST_YEAR, 12, 1)
+        .map(|h| {
+            let len = i64::from(h.month_len());
+            h.to_gregorian()
+                .map(|g| g + chrono::Duration::days(len - 1))
+                .unwrap_or_else(|| NaiveDate::from_ymd_opt(2077, 12, 31).unwrap())
+        })
+        .unwrap_or_else(|| NaiveDate::from_ymd_opt(2077, 12, 31).unwrap());
+    let prev_enabled = first > bound_first.with_day(1).unwrap_or(bound_first);
+    let next_enabled = first < bound_last.with_day(1).unwrap_or(bound_last);
+    ui.set_calendar_prev_enabled(prev_enabled);
+    ui.set_calendar_next_enabled(next_enabled);
+    let note = if !next_enabled {
+        format!("Dates unavailable beyond {}", bound_last.format("%B %Y"))
+    } else if !prev_enabled {
+        format!("Dates unavailable before {}", bound_first.format("%B %Y"))
+    } else {
+        String::new()
+    };
+    ui.set_hijri_range_note(note.into());
+
+    // Selected day: five times, same honesty rules as the Today panel.
+    let sel = cal.selected.unwrap_or(today);
+    let times = prayer::compute(sel, location.coordinates, &state.settings.config);
+    let prov = provenance(sel, location.coordinates, &state.settings.config);
+    let strip: Vec<DayTime> = [
+        (Prayer::Fajr, prov.fajr),
+        (Prayer::Dhuhr, prov.dhuhr),
+        (Prayer::Asr, prov.asr),
+        (Prayer::Maghrib, prov.maghrib),
+        (Prayer::Isha, prov.isha),
+    ]
+    .iter()
+    .map(|(p, src)| {
+        let t = times.time(*p);
+        DayTime {
+            name: p.name_en().into(),
+            name_ar: p.name_ar().into(),
+            time: t
+                .map(|i| hhmm(location, i))
+                .unwrap_or_else(|| "\u{2014}".to_string())
+                .into(),
+            estimated: *src == TimeSource::Rule,
+            is_none: t.is_none(),
+        }
+    })
+    .collect();
+    ui.set_selected_day_times(ModelRc::new(VecModel::from(strip)));
+    ui.set_selected_day_label(format!("Times for this day · {}", sel.format("%a %d %b %Y")).into());
+
+    // Ramadan banner: offer during Ramadan when off; gentle end notice.
+    let cur_ramadan = from_gregorian(today)
+        .map(|h| h.is_ramadan())
+        .unwrap_or(false);
+    let banner = if cur_ramadan && !state.settings.ramadan_mode {
+        1
+    } else if state.settings.ramadan_mode && !cur_ramadan {
+        2
+    } else {
+        0
+    };
+    ui.set_ramadan_month(cur_ramadan);
+    ui.set_ramadan_banner(banner);
+    ui.set_ramadan_mode(state.settings.ramadan_mode);
+    ui.set_calendar_primary(
+        if state.settings.calendar_hijri_primary {
+            "hijri"
+        } else {
+            "greg"
+        }
+        .into(),
+    );
 }
 
 fn apply_settings(ui: &MainWindow, state: &AppState) {
@@ -1635,6 +1752,15 @@ fn announce(
             } else {
                 format!("{} in {} min", event.label, minutes)
             };
+            // Ramadan mode (Phase 5 §6.2): renamed copy ONLY — same
+            // pre-alert machinery, same event kinds, no new notifications.
+            let title = if settings.ramadan_mode && event.label == "Fajr" {
+                format!("Suhur reminder · {title}")
+            } else if settings.ramadan_mode && event.label == "Maghrib" {
+                format!("Iftar reminder · {title}")
+            } else {
+                title
+            };
             let prayer_time = location.local(prayer_at).format("%H:%M");
             (
                 title,
@@ -1943,6 +2069,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
         mosques: initial_mosques,
         mosque_confirm: std::cell::RefCell::new(String::new()),
+        calendar: std::cell::RefCell::new(CalendarUi {
+            anchor: Utc::now().date_naive(),
+            selected: None,
+        }),
     }));
 
     let (wake_tx, wake_rx) = mpsc::channel::<()>();
@@ -2188,6 +2318,126 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ui.set_manual_error("".into());
                 run_picker_search(&ui, &s, "");
                 ui.set_page("city-picker".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_open_calendar(move || {
+            if let Some(ui) = weak.upgrade() {
+                let s = state.lock().unwrap();
+                let location = s.location();
+                let today = location.local(now()).date_naive();
+                {
+                    let mut cal = s.calendar.borrow_mut();
+                    cal.anchor = today;
+                    cal.selected = Some(today);
+                }
+                build_calendar(&ui, &s, &location);
+                ui.set_page("calendar".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_calendar_back(move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_page("home".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_calendar_nav(move |delta| {
+            if let Some(ui) = weak.upgrade() {
+                let s = state.lock().unwrap();
+                let location = s.location();
+                {
+                    let mut cal = s.calendar.borrow_mut();
+                    let months = chrono::Months::new(delta.unsigned_abs());
+                    cal.anchor = if delta < 0 {
+                        cal.anchor.checked_sub_months(months)
+                    } else {
+                        cal.anchor.checked_add_months(months)
+                    }
+                    .unwrap_or(cal.anchor);
+                }
+                build_calendar(&ui, &s, &location);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_calendar_today(move || {
+            if let Some(ui) = weak.upgrade() {
+                let s = state.lock().unwrap();
+                let location = s.location();
+                let today = location.local(now()).date_naive();
+                {
+                    let mut cal = s.calendar.borrow_mut();
+                    cal.anchor = today;
+                    cal.selected = Some(today);
+                }
+                build_calendar(&ui, &s, &location);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_set_calendar_primary(move |key| {
+            if let Some(ui) = weak.upgrade() {
+                let mut s = state.lock().unwrap();
+                s.settings.calendar_hijri_primary = key.as_str() == "hijri";
+                s.changed();
+                let location = s.location();
+                build_calendar(&ui, &s, &location);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_pick_day(move |iso| {
+            if let Some(ui) = weak.upgrade() {
+                let s = state.lock().unwrap();
+                if let Ok(d) = NaiveDate::parse_from_str(iso.as_str(), "%Y-%m-%d") {
+                    s.calendar.borrow_mut().selected = Some(d);
+                    let location = s.location();
+                    build_calendar(&ui, &s, &location);
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_set_ramadan_mode(move |on| {
+            if let Some(ui) = weak.upgrade() {
+                let mut s = state.lock().unwrap();
+                if on {
+                    // Opt-in only. Remember the theme; suggest Ramadan's.
+                    s.settings.pre_ramadan_theme = Some(s.settings.theme);
+                    s.settings.theme = tawadu_core::settings::Theme::Ramadan;
+                    s.settings.calendar_hijri_primary = true;
+                } else {
+                    // Restore the remembered theme — never a silent switch.
+                    s.settings.theme = s
+                        .settings
+                        .pre_ramadan_theme
+                        .take()
+                        .unwrap_or(tawadu_core::settings::Theme::Plaster);
+                }
+                s.settings.ramadan_mode = on;
+                s.changed();
+                apply_theme(&ui, s.settings.theme);
+                apply_home(&ui, &s);
+                apply_settings(&ui, &s);
+                let location = s.location();
+                build_calendar(&ui, &s, &location);
             }
         });
     }
@@ -3769,6 +4019,10 @@ mod tests {
             }),
             mosques: Vec::new(),
             mosque_confirm: std::cell::RefCell::new(String::new()),
+            calendar: std::cell::RefCell::new(CalendarUi {
+                anchor: Utc::now().date_naive(),
+                selected: None,
+            }),
             athkar: std::cell::RefCell::new(AthkarUi {
                 ctx,
                 loaded_ctx: Some(ctx),

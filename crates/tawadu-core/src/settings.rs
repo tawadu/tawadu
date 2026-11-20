@@ -165,6 +165,17 @@ pub struct Settings {
     /// blobs upgrade with NO active mosque — never a silent assignment.
     #[serde(default)]
     pub active_mosque: Option<String>,
+    /// Phase 5 §6.2: Ramadan mode (opt-in, never auto-applied). Exactly
+    /// three effects: theme suggestion, suhur/iftar pre-alert copy,
+    /// calendar emphasis. Nothing invented.
+    #[serde(default)]
+    pub ramadan_mode: bool,
+    /// The theme to restore when Ramadan mode turns off (remembered).
+    #[serde(default)]
+    pub pre_ramadan_theme: Option<Theme>,
+    /// Calendar toggle: which numbering is primary (dual always shown).
+    #[serde(default)]
+    pub calendar_hijri_primary: bool,
 }
 
 impl Default for Settings {
@@ -190,6 +201,9 @@ impl Default for Settings {
             audio: AudioSettings::default(),
             recent_cities: Vec::new(),
             active_mosque: None,
+            ramadan_mode: false,
+            pre_ramadan_theme: None,
+            calendar_hijri_primary: false,
         }
     }
 }
@@ -204,6 +218,9 @@ mod tests {
         let obj = blob.as_object_mut().unwrap();
         obj.remove("recent_cities");
         obj.remove("active_mosque");
+        obj.remove("ramadan_mode");
+        obj.remove("pre_ramadan_theme");
+        obj.remove("calendar_hijri_primary");
         obj["location"]["name"] = serde_json::json!("Oslo");
         let upgraded: Settings = serde_json::from_value(blob).unwrap();
         assert_eq!(upgraded.location.name, "Oslo", "chosen city preserved");
@@ -212,6 +229,12 @@ mod tests {
             upgraded.active_mosque.is_none(),
             "no silent mosque assignment"
         );
+        assert!(
+            !upgraded.ramadan_mode,
+            "Ramadan mode is opt-in, never auto-on"
+        );
+        assert!(upgraded.pre_ramadan_theme.is_none());
+        assert!(!upgraded.calendar_hijri_primary);
     }
 
     #[test]

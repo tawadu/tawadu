@@ -9,7 +9,7 @@
 //  - Arabic and Latin never share one `text:` string. The bidi algorithm then
 //    reorders the runs and the words come out of line. Each run gets its own Text.
 
-import { AthkarItemView, CityResult, CityRow, ContextChip, CreditPack, CreditRow, EventVoiceRow, MethodRow, MosqueProfile, OptionRow, PackRow, Row, RuleOption, VoiceOption } from "types.slint";
+import { AthkarItemView, CalendarDay, CityResult, CityRow, ContextChip, CreditPack, CreditRow, DayTime, EventVoiceRow, MethodRow, MosqueProfile, OptionRow, PackRow, Row, RuleOption, VoiceOption } from "types.slint";
 
 // Design tokens — Plaster theme. Declared here (not in an imported file) so the
 // Rust side can reach the global and switch themes at runtime.
@@ -228,7 +228,9 @@ component Stepper inherits HorizontalLayout {
 component Action inherits Rectangle {
     in property <string> label;
     in property <bool> primary;
+    in property <bool> enabled: true;
     callback triggered();
+    opacity: enabled ? 1.0 : 0.45;
     height: 36px;
     width: label-text.preferred-width + 34px;
     background: primary ? Palette.accent : Palette.surface;
@@ -246,7 +248,7 @@ component Action inherits Rectangle {
         vertical-alignment: center;
     }
     TouchArea {
-        clicked => { triggered(); }
+        clicked => { if (enabled) { triggered(); } }
     }
 }
 
@@ -557,6 +559,47 @@ component AudioSlider inherits Rectangle {
     }
 }
 
+// Phase 5 calendar cell (Prism §6.1): dual numbering, today ring, gold
+// Ramadan dot, out-of-month muted but numbered (no blank cells).
+component DayCell inherits Rectangle {
+    in property <CalendarDay> day;
+    in property <string> primary;
+    callback picked(string);
+    height: 52px;
+    background: day.is-today ? Palette.accent-soft : Palette.surface;
+    border-color: day.is-today ? Palette.accent : Palette.border;
+    border-width: day.is-today ? 2px : 1px;
+    border-radius: Palette.radius-small;
+    opacity: day.in-month ? 1.0 : 0.5;
+    VerticalLayout {
+        padding: 4px;
+        spacing: 0px;
+        alignment: center;
+        Text {
+            text: primary == "hijri" ? (day.hijri == 0 ? "—" : "\{day.hijri}") : "\{day.gregorian}";
+            font-size: 15px;
+            font-weight: 600;
+            color: Palette.ink;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: primary == "hijri" ? "\{day.gregorian}" : (day.hijri == 0 ? "—" : "\{day.hijri}");
+            font-size: 11px;
+            color: Palette.ink-muted;
+            horizontal-alignment: center;
+        }
+    }
+    if (day.is-ramadan) : Rectangle {
+        x: parent.width - 10px;
+        y: 4px;
+        width: 6px;
+        height: 6px;
+        border-radius: 3px;
+        background: Palette.gold;
+    }
+    TouchArea { clicked => { picked(day.iso); } }
+}
+
 export component MainWindow inherits Window {
     title: "Tawadu";
     width: 980px;
@@ -627,6 +670,19 @@ export component MainWindow inherits Window {
     in property <string> fine_tune_summary;
     in property <[int]> fine_tune;
     in-out property <bool> fine_tune_open;
+    // ---- Phase 5 calendar + Ramadan (Prism §6, Quill §4.4) ----
+    in property <string> calendar_month_label;
+    in property <string> calendar_month_label_ar;
+    in property <[CalendarDay]> calendar_days;
+    in property <string> calendar_primary;
+    in property <bool> ramadan_month;
+    in property <bool> ramadan_mode;
+    in property <int> ramadan_banner;
+    in property <string> hijri_range_note;
+    in property <bool> calendar_prev_enabled;
+    in property <bool> calendar_next_enabled;
+    in property <string> selected_day_label;
+    in property <[DayTime]> selected_day_times;
     in property <[MethodRow]> methods_left;
     in property <[MethodRow]> methods_right;
     in property <string> selected_method;
@@ -713,6 +769,13 @@ export component MainWindow inherits Window {
     callback show-explain();
     callback explain-change-rule();
     callback explain-why-rules();
+    callback open-calendar();
+    callback calendar-back();
+    callback calendar-nav(int);
+    callback calendar-today();
+    callback set-calendar-primary(string);
+    callback pick-day(string);
+    callback set-ramadan-mode(bool);
     callback set-method(string);
     callback set-madhab(string);
     callback set-high-latitude(string);
@@ -813,6 +876,11 @@ export component MainWindow inherits Window {
                 }
             }
             Rectangle { }
+            Action {
+                label: "Calendar";
+                primary: false;
+                triggered => { open-calendar(); }
+            }
             Action {
                 label: "الإعدادات";
                 primary: false;
@@ -1340,6 +1408,11 @@ export component MainWindow inherits Window {
                     border-width: 1px;
                     border-radius: Palette.radius;
                     Section { title: "APPEARANCE";
+                        Toggle {
+                            label: "Ramadan mode";
+                            on: ramadan_mode;
+                            toggled(on) => { set-ramadan-mode(on); }
+                        }
                         Segmented {
                             label: "Theme";
                             options: theme_options;
@@ -1578,6 +1651,147 @@ export component MainWindow inherits Window {
                     triggered => { close-settings(); }
                 }
             }
+            }
+        }
+
+        // ---- Phase 5 calendar (Prism §6, Quill §4.4) ----
+        if (page == "calendar") : Flickable {
+            VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+                HorizontalLayout {
+                    spacing: 12px;
+                    Action { label: "Back"; primary: false; triggered => { calendar-back(); } }
+                    Text { text: "Calendar"; font-size: 20px; font-weight: 600; color: Palette.ink; vertical-alignment: center; }
+                    Text { text: "التقويم"; font-size: 16px; color: Palette.ink-muted; vertical-alignment: center; }
+                }
+                if (ramadan_banner == 1) : Rectangle {
+                    background: Palette.accent-soft;
+                    border-color: Palette.gold;
+                    border-width: 1px;
+                    border-radius: Palette.radius-small;
+                    HorizontalLayout {
+                        padding: 12px;
+                        spacing: 12px;
+                        Text { text: "Ramadan Mubarak"; font-size: 14px; font-weight: 600; color: Palette.ink; vertical-alignment: center; }
+                        Text { text: "رمضان مبارك"; font-size: 14px; color: Palette.ink; vertical-alignment: center; }
+                        Rectangle { }
+                        Action { label: "Turn on Ramadan mode"; primary: true; triggered => { set-ramadan-mode(true); } }
+                    }
+                }
+                if (ramadan_banner == 2) : Rectangle {
+                    background: Palette.surface-secondary;
+                    border-radius: Palette.radius-small;
+                    HorizontalLayout {
+                        padding: 12px;
+                        spacing: 12px;
+                        Text { text: "Ramadan has ended — turn off mode?"; font-size: 13px; color: Palette.ink; vertical-alignment: center; }
+                        Rectangle { }
+                        Action { label: "Turn off"; primary: false; triggered => { set-ramadan-mode(false); } }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Action { label: "‹"; primary: false; enabled: calendar_prev_enabled; triggered => { calendar-nav(-1); } }
+                    Text { text: calendar_month_label; font-size: 16px; font-weight: 600; color: Palette.ink; vertical-alignment: center; }
+                    Text { text: calendar_month_label_ar; font-size: 14px; color: Palette.ink-muted; vertical-alignment: center; }
+                    Action { label: "›"; primary: false; enabled: calendar_next_enabled; triggered => { calendar-nav(1); } }
+                    Rectangle { }
+                    Action { label: "Today"; primary: false; triggered => { calendar-today(); } }
+                }
+                if (hijri_range_note != "") : Text {
+                    text: hijri_range_note;
+                    font-size: 11px;
+                    color: Palette.ink-muted;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Primary:"; font-size: 12px; color: Palette.ink-muted; vertical-alignment: center; }
+                    Action {
+                        label: "Gregorian";
+                        primary: calendar_primary == "greg";
+                        triggered => { set-calendar-primary("greg"); }
+                    }
+                    Action {
+                        label: "Hijri";
+                        primary: calendar_primary == "hijri";
+                        triggered => { set-calendar-primary("hijri"); }
+                    }
+                }
+                GridLayout {
+                    spacing: 4px;
+                    Row {
+                        DayCell { day: calendar_days[0]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[1]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[2]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[3]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[4]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[5]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[6]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                    }
+                    Row {
+                        DayCell { day: calendar_days[7]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[8]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[9]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[10]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[11]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[12]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[13]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                    }
+                    Row {
+                        DayCell { day: calendar_days[14]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[15]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[16]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[17]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[18]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[19]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[20]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                    }
+                    Row {
+                        DayCell { day: calendar_days[21]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[22]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[23]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[24]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[25]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[26]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[27]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                    }
+                    Row {
+                        DayCell { day: calendar_days[28]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[29]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[30]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[31]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[32]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[33]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[34]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                    }
+                    Row {
+                        DayCell { day: calendar_days[35]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[36]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[37]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[38]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[39]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[40]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[41]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                    }
+                }
+                if (selected_day_label != "") : VerticalLayout {
+                    spacing: 6px;
+                    Text { text: selected_day_label; font-size: 13px; font-weight: 600; color: Palette.ink; }
+                    for t in selected_day_times : HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: t.name; font-size: 13px; color: Palette.ink; width: 90px; }
+                        Text { text: t.name-ar; font-size: 12px; color: Palette.ink-muted; }
+                        Rectangle { }
+                        if (t.estimated) : Text { text: "Estimated"; font-size: 10px; color: Palette.ink-muted; vertical-alignment: center; }
+                        Text {
+                            text: t.time;
+                            font-size: 13px;
+                            font-weight: 500;
+                            color: t.is-none ? Palette.ink-muted : Palette.ink;
+                        }
+                    }
+                }
             }
         }
 
