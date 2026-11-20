@@ -241,10 +241,21 @@ With debug clock `TAWADU_DEBUG_NOW=2027-06-21T12:00:00+02:00`, city = Tromsø
    estimated times **in the same session** (recompute path).
 5. December variant (`2027-12-21`): strip says the sun never **rises**; no
    fabricated sunrise.
-6. Oslo / Auckland / Riyadh on the same date: all five prayers numeric, no
-   `estimated` captions at Oslo's latitude under default rules, "How computed"
-   expander lists the actual config, Auckland's times match the far-east
-   anchoring fixtures (±1 min).
+6. Oslo / Auckland / Riyadh on the same date — **Oslo solstice exception
+   (deviation (a); adjudicated JUSTIFIED, Sentinel PR #5 verdict §7a):** at
+   59.91° N the sun's midnight altitude on the June solstice is −6.65°, so it
+   never reaches the −18° (MWL) / −18.5° (UmmAlQura) twilight angles and
+   **Fajr is always rule-clamped → honestly captioned `estimated`**. Executed
+   probe, Oslo 2027-06-21, default config (UmmAlQura + MiddleOfTheNight):
+   `fajr=Rule, isha=Sun, sunrise=Sun, maghrib=Sun, polar=None`; equinox control
+   2027-03-20 all-Sun. Pinned by
+   `oslo_june_persistent_twilight_is_rule_estimated_not_polar`
+   (`crates/tawadu-core/src/prayer.rs:861-883`). Isha stays Sun/numeric under
+   the default interval method, so the original "all five numeric / no
+   estimated captions" clause never held for Fajr at Oslo on the solstice.
+   Auckland and Riyadh: all five numeric. "How computed" expander lists the
+   actual config; Auckland's times match the far-east anchoring fixtures
+   (±1 min).
 
 ## 6. Calendar views + Ramadan mode
 
