@@ -9,7 +9,7 @@
 //  - Arabic and Latin never share one `text:` string. The bidi algorithm then
 //    reorders the runs and the words come out of line. Each run gets its own Text.
 
-import { AthkarItemView, CityRow, ContextChip, CreditPack, CreditRow, EventVoiceRow, MethodRow, OptionRow, PackRow, Row, VoiceOption } from "types.slint";
+import { AthkarItemView, CalendarDay, CityResult, CityRow, ContextChip, CreditPack, CreditRow, DayTime, EventVoiceRow, MethodRow, MosqueProfile, OptionRow, PackRow, Row, RuleOption, VoiceOption } from "types.slint";
 
 // Design tokens — Plaster theme. Declared here (not in an imported file) so the
 // Rust side can reach the global and switch themes at runtime.
@@ -24,6 +24,8 @@ export global Palette {
     in property <color> accent-soft: #E3EEE9;
     in property <color> accent-ink: #FFFFFF;
     in property <color> gold: #B08A4A;
+    // Phase 5: inline validation errors (Prism token review flagged in PR).
+    in property <color> danger: #9C3B2E;
     // Ramadan defines no distinct gold — its accent IS gold (Prism §4).
     in property <bool> gold-is-accent: false;
     in property <length> radius: 16px;
@@ -226,7 +228,9 @@ component Stepper inherits HorizontalLayout {
 component Action inherits Rectangle {
     in property <string> label;
     in property <bool> primary;
+    in property <bool> enabled: true;
     callback triggered();
+    opacity: enabled ? 1.0 : 0.45;
     height: 36px;
     width: label-text.preferred-width + 34px;
     background: primary ? Palette.accent : Palette.surface;
@@ -244,7 +248,7 @@ component Action inherits Rectangle {
         vertical-alignment: center;
     }
     TouchArea {
-        clicked => { triggered(); }
+        clicked => { if (enabled) { triggered(); } }
     }
 }
 
@@ -555,6 +559,47 @@ component AudioSlider inherits Rectangle {
     }
 }
 
+// Phase 5 calendar cell (Prism §6.1): dual numbering, today ring, gold
+// Ramadan dot, out-of-month muted but numbered (no blank cells).
+component DayCell inherits Rectangle {
+    in property <CalendarDay> day;
+    in property <string> primary;
+    callback picked(string);
+    height: 52px;
+    background: day.is-today ? Palette.accent-soft : Palette.surface;
+    border-color: day.is-today ? Palette.accent : Palette.border;
+    border-width: day.is-today ? 2px : 1px;
+    border-radius: Palette.radius-small;
+    opacity: day.in-month ? 1.0 : 0.5;
+    VerticalLayout {
+        padding: 4px;
+        spacing: 0px;
+        alignment: center;
+        Text {
+            text: primary == "hijri" ? (day.hijri == 0 ? "—" : "\{day.hijri}") : "\{day.gregorian}";
+            font-size: 15px;
+            font-weight: 600;
+            color: Palette.ink;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: primary == "hijri" ? "\{day.gregorian}" : (day.hijri == 0 ? "—" : "\{day.hijri}");
+            font-size: 11px;
+            color: Palette.ink-muted;
+            horizontal-alignment: center;
+        }
+    }
+    if (day.is-ramadan) : Rectangle {
+        x: parent.width - 10px;
+        y: 4px;
+        width: 6px;
+        height: 6px;
+        border-radius: 3px;
+        background: Palette.gold;
+    }
+    TouchArea { clicked => { picked(day.iso); } }
+}
+
 export component MainWindow inherits Window {
     title: "Tawadu";
     width: 980px;
@@ -572,6 +617,15 @@ export component MainWindow inherits Window {
     in property <string> next_name_ar;
     in property <string> countdown;
     in property <string> next_iqamah;
+    in property <string> next_iqamah_caption;
+    in property <string> next_iqamah_caption_ar;
+    // ---- Phase 5 mosques (Prism §4, Quill §4.2) ----
+    in property <[MosqueProfile]> mosques;
+    in-out property <string> editing_mosque;
+    in property <string> mosque_remove_confirm;
+    in property <bool> mosque_name_hint;
+    in property <string> mosque_remove_body;
+    in property <bool> mosque_remove_active;
     in property <string> athkar_text;
     in property <string> athkar_label;
     in property <string> athkar_progress;
@@ -586,6 +640,56 @@ export component MainWindow inherits Window {
     in property <string> settings_location_name_ar;
     in-out property <string> location_query;
     in property <[CityRow]> city_results;
+    // ---- Phase 5 city picker (Prism §3/§8, Quill §4.1 verbatim) ----
+    in-out property <string> city_query;
+    in property <[CityResult]> picker_results;
+    in property <[CityResult]> recent_cities;
+    in-out property <int> highlighted_result;
+    in property <string> picker_message;
+    in property <string> picker_message_body;
+    in property <string> city_disambiguation;
+    in property <bool> city_cap_visible;
+    in property <bool> gps_available;
+    in property <bool> gps_busy;
+    in property <bool> gps_confirm_visible;
+    in property <string> gps_lat;
+    in property <string> gps_lon;
+    in property <bool> picker_db_available;
+    in-out property <bool> coords_open;
+    in-out property <string> manual_lat;
+    in-out property <string> manual_lon;
+    in-out property <string> manual_name;
+    in-out property <string> manual_tz;
+    in-out property <string> manual_tz_query;
+    in property <[OptionRow]> tz_results;
+    in property <string> manual_error;
+    in property <string> settings_location_tz;
+    // ---- Phase 5 high-latitude honesty (Prism §5, Quill §4.3) ----
+    in property <[RuleOption]> high_lat_rules;
+    in property <string> selected_high_lat_rule;
+    in property <bool> explain_visible;
+    in property <string> explain_title;
+    in property <string> explain_body;
+    in property <bool> next_none_visible;
+    in-out property <bool> how_computed_open;
+    in property <string> computed_summary;
+    in property <string> variance_line;
+    in property <string> fine_tune_summary;
+    in property <[int]> fine_tune;
+    in-out property <bool> fine_tune_open;
+    // ---- Phase 5 calendar + Ramadan (Prism §6, Quill §4.4) ----
+    in property <string> calendar_month_label;
+    in property <string> calendar_month_label_ar;
+    in property <[CalendarDay]> calendar_days;
+    in property <string> calendar_primary;
+    in property <bool> ramadan_month;
+    in property <bool> ramadan_mode;
+    in property <int> ramadan_banner;
+    in property <string> hijri_range_note;
+    in property <bool> calendar_prev_enabled;
+    in property <bool> calendar_next_enabled;
+    in property <string> selected_day_label;
+    in property <[DayTime]> selected_day_times;
     in property <[MethodRow]> methods_left;
     in property <[MethodRow]> methods_right;
     in property <string> selected_method;
@@ -650,6 +754,39 @@ export component MainWindow inherits Window {
     callback close-settings();
     callback search-city(string);
     callback select-city(string);
+    callback open-city-picker();
+    callback picker-back();
+    callback search-cities(string);
+    callback pick-city(string);
+    callback pick-recent(string);
+    callback nav-result(int);
+    callback use-gps();
+    callback gps-confirm();
+    callback gps-cancel();
+    callback apply-coords(string, string, string, string);
+    callback search-tz(string);
+    callback pick-tz(string);
+    callback add-mosque();
+    callback activate-mosque(string);
+    callback set-mosque-name(string, string);
+    callback set-mosque-name-ar(string, string);
+    callback set-mosque-offset(string, string, int);
+    callback remove-mosque(string);
+    callback edit-mosque(string);
+    callback cancel-mosque-remove();
+    callback done-editing();
+    callback set-high-lat(string);
+    callback set-fine-tune(string, int);
+    callback show-explain();
+    callback explain-change-rule();
+    callback explain-why-rules();
+    callback open-calendar();
+    callback calendar-back();
+    callback calendar-nav(int);
+    callback calendar-today();
+    callback set-calendar-primary(string);
+    callback pick-day(string);
+    callback set-ramadan-mode(bool);
     callback set-method(string);
     callback set-madhab(string);
     callback set-high-latitude(string);
@@ -751,6 +888,11 @@ export component MainWindow inherits Window {
             }
             Rectangle { }
             Action {
+                label: "Calendar";
+                primary: false;
+                triggered => { open-calendar(); }
+            }
+            Action {
                 label: "الإعدادات";
                 primary: false;
                 triggered => { open-settings(); }
@@ -796,6 +938,12 @@ export component MainWindow inherits Window {
                             font-weight: 400;
                             color: Palette.ink;
                         }
+                        if (next_none_visible) : Text {
+                            text: "No defined time today — see why";
+                            font-size: 12px;
+                            color: Palette.accent;
+                            TouchArea { clicked => { show-explain(); } }
+                        }
                     }
                 }
 
@@ -818,6 +966,17 @@ export component MainWindow inherits Window {
                             font-size: 16px;
                             font-weight: 600;
                             color: Palette.ink;
+                        }
+                        if (next_iqamah_caption != "") : Text {
+                            text: next_iqamah_caption;
+                            font-size: 11px;
+                            color: Palette.ink-muted;
+                        }
+                        if (next_iqamah_caption_ar != "") : Text {
+                            text: next_iqamah_caption_ar;
+                            font-size: 11px;
+                            color: Palette.ink-muted;
+                            horizontal-alignment: end;
                         }
                     }
                 }
@@ -887,12 +1046,67 @@ export component MainWindow inherits Window {
                                 color: row.is_prayer ? Palette.ink : Palette.ink-muted;
                             }
                             Rectangle { }
-                            RowText {
-                                text: row.time;
-                                font-size: 15px;
-                                font-weight: 500;
-                                color: Palette.ink;
+                            if (row.is_none || row.estimated) : Rectangle {
+                                width: 6px;
+                                height: 6px;
+                                border-radius: 3px;
+                                background: Palette.ink-muted;
                             }
+                            VerticalLayout {
+                                spacing: 0px;
+                                alignment: center;
+                                RowText {
+                                    text: row.time;
+                                    font-size: 15px;
+                                    font-weight: 500;
+                                    color: row.is_none ? Palette.ink-muted : Palette.ink;
+                                }
+                                if (row.estimated) : Text {
+                                    text: "Estimated";
+                                    font-size: 10px;
+                                    color: Palette.ink-muted;
+                                    horizontal-alignment: end;
+                                }
+                                if (row.is_none) : Text {
+                                    text: "No defined time";
+                                    font-size: 10px;
+                                    color: Palette.ink-muted;
+                                    horizontal-alignment: end;
+                                }
+                            }
+                        }
+                        if (row.is_none || row.estimated) : TouchArea {
+                            clicked => { show-explain(); }
+                        }
+                    }
+                    if (explain_visible) : Rectangle {
+                        background: Palette.surface-secondary;
+                        border-radius: Palette.radius-small;
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 6px;
+                            Text { text: explain_title; font-size: 14px; font-weight: 600; color: Palette.ink; wrap: word-wrap; }
+                            Text { text: explain_body; font-size: 12px; color: Palette.ink; wrap: word-wrap; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Action { label: "Change rule"; primary: false; triggered => { explain-change-rule(); } }
+                                Action { label: "Why these rules?"; primary: false; triggered => { explain-why-rules(); } }
+                            }
+                        }
+                    }
+                    Action {
+                        label: how_computed_open ? "Hide computation details" : "How these times are computed";
+                        primary: false;
+                        triggered => { how_computed_open = !how_computed_open; }
+                    }
+                    if (how_computed_open) : VerticalLayout {
+                        spacing: 4px;
+                        Text { text: computed_summary; font-size: 12px; color: Palette.ink-muted; wrap: word-wrap; }
+                        Text {
+                            text: variance_line;
+                            font-size: 11px;
+                            color: Palette.ink-muted;
+                            wrap: word-wrap;
                         }
                     }
                 }
@@ -937,48 +1151,123 @@ export component MainWindow inherits Window {
                                 color: Palette.accent;
                             }
                         }
-                        HorizontalLayout {
-                            spacing: 8px;
-                            TextInput {
-                                width: 240px;
-                                height: 30px;
-                                text: location_query;
-                                font-size: 13px;
-                                color: Palette.ink;
-                            }
-                            Action {
-                                label: "بحث";
-                                primary: true;
-                                triggered => { search-city(location_query); }
-                            }
+                        RowText {
+                            text: settings_location_tz;
+                            font-size: 12px;
+                            color: Palette.ink-muted;
                         }
-                        for city in city_results : Rectangle {
-                            height: 28px;
-                            background: Palette.surface-secondary;
+                        Action {
+                            label: "City picker";
+                            primary: false;
+                            triggered => { open-city-picker(); }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    background: Palette.surface;
+                    border-color: Palette.border;
+                    border-width: 1px;
+                    border-radius: Palette.radius;
+                    Section { title: "MOSQUES"; title-ar: "المساجد";
+                        if (mosques.length == 0) : VerticalLayout {
+                            spacing: 6px;
+                            Text { text: "No mosque profiles yet"; font-size: 14px; font-weight: 600; color: Palette.ink; }
+                            Text { text: "Add your mosque to get iqamah times."; font-size: 12px; color: Palette.ink-muted; }
+                        }
+                        for m in mosques : Rectangle {
+                            background: m.is-active ? Palette.accent-soft : Palette.surface;
+                            border-color: m.is-active ? Palette.accent : Palette.border;
+                            border-width: 1px;
                             border-radius: Palette.radius-small;
-                            HorizontalLayout {
-                                padding-left: 10px;
+                            VerticalLayout {
+                                padding: 10px;
                                 spacing: 6px;
-                                RowText {
-                                    text: city.name;
-                                    font-size: 12px;
-                                    color: Palette.ink;
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text { text: m.name; font-size: 14px; font-weight: 600; color: Palette.ink; }
+                                    if (m.name-ar != "") : Text {
+                                        text: m.name-ar;
+                                        font-size: 13px;
+                                        color: Palette.ink-muted;
+                                        horizontal-alignment: end;
+                                    }
+                                    if (m.is-active) : Rectangle {
+                                        height: 20px;
+                                        width: active-badge.preferred-width + 12px;
+                                        border-radius: 10px;
+                                        background: Palette.accent;
+                                        active-badge := Text { text: "Active"; font-size: 10px; color: Palette.accent-ink; horizontal-alignment: center; vertical-alignment: center; }
+                                    }
                                 }
-                                RowText {
-                                    text: city.name_ar;
-                                    font-size: 12px;
-                                    color: Palette.ink-muted;
-                                }
-                                RowText {
-                                    text: city.country;
+                                Text {
+                                    text: m.offsets-summary == "" ? "No offsets set" : m.offsets-summary;
                                     font-size: 11px;
                                     color: Palette.ink-muted;
                                 }
+                                if (editing_mosque != m.id && mosque_remove_confirm != m.id) : HorizontalLayout {
+                                    spacing: 8px;
+                                    Action { label: "Edit"; primary: false; triggered => { edit-mosque(m.id); } }
+                                    Action { label: "Remove"; primary: false; triggered => { remove-mosque(m.id); } }
+                                }
+                                if (mosque_remove_confirm == m.id) : VerticalLayout {
+                                    spacing: 6px;
+                                    Text { text: "Remove this mosque?"; font-size: 13px; font-weight: 600; color: Palette.ink; }
+                                    Text { text: mosque_remove_body; font-size: 12px; color: Palette.ink; wrap: word-wrap; }
+                                    if (mosque_remove_active) : Text {
+                                        text: "This is the active mosque.";
+                                        font-size: 11px;
+                                        color: Palette.ink-muted;
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        Action { label: "Remove"; primary: true; triggered => { remove-mosque(m.id); } }
+                                        Action { label: "Cancel"; primary: false; triggered => { cancel-mosque-remove(); } }
+                                    }
+                                }
+                                if (editing_mosque == m.id) : VerticalLayout {
+                                    spacing: 6px;
+                                    Text { text: "Mosque name"; font-size: 12px; color: Palette.ink-muted; }
+                                    TextInput {
+                                        width: 240px;
+                                        height: 30px;
+                                        text: m.name;
+                                        font-size: 13px;
+                                        color: Palette.ink;
+                                        edited => { set-mosque-name(m.id, self.text); }
+                                    }
+                                    if (m.name == "") : Text {
+                                        text: "Enter a name to save.";
+                                        font-size: 11px;
+                                        color: Palette.danger;
+                                    }
+                                    Text { text: "Arabic name (optional)"; font-size: 12px; color: Palette.ink-muted; }
+                                    TextInput {
+                                        width: 240px;
+                                        height: 30px;
+                                        text: m.name-ar;
+                                        font-size: 13px;
+                                        color: Palette.ink;
+                                        edited => { set-mosque-name-ar(m.id, self.text); }
+                                    }
+                                    Text { text: "Iqamah offsets (minutes after the athan)"; font-size: 12px; color: Palette.ink-muted; wrap: word-wrap; }
+                                    Stepper { label: "Fajr"; label-ar: "الفجر"; value: m.fajr; step: 1; min-value: 0; max-value: 60; changed(v) => { set-mosque-offset(m.id, "fajr", v); } }
+                                    Stepper { label: "Dhuhr"; label-ar: "الظهر"; value: m.dhuhr; step: 1; min-value: 0; max-value: 60; changed(v) => { set-mosque-offset(m.id, "dhuhr", v); } }
+                                    Stepper { label: "Asr"; label-ar: "العصر"; value: m.asr; step: 1; min-value: 0; max-value: 60; changed(v) => { set-mosque-offset(m.id, "asr", v); } }
+                                    Stepper { label: "Maghrib"; label-ar: "المغرب"; value: m.maghrib; step: 1; min-value: 0; max-value: 60; changed(v) => { set-mosque-offset(m.id, "maghrib", v); } }
+                                    Stepper { label: "Isha"; label-ar: "العشاء"; value: m.isha; step: 1; min-value: 0; max-value: 60; changed(v) => { set-mosque-offset(m.id, "isha", v); } }
+                                    Action { label: "Done"; primary: true; triggered => { done-editing(); } }
+                                }
                             }
                             TouchArea {
-                                clicked => { select-city(city.name); }
+                                clicked => {
+                                    if (!m.is-active && editing_mosque != m.id) {
+                                        activate-mosque(m.id);
+                                    }
+                                }
                             }
                         }
+                        Action { label: "+ Add mosque"; primary: mosques.length == 0; triggered => { add-mosque(); } }
                     }
                 }
 
@@ -1093,17 +1382,48 @@ export component MainWindow inherits Window {
                             selected: selected_madhab;
                             picked(value) => { set-madhab(value); }
                         }
-                        Segmented {
-                            label: "High lat.";
-                            options: high_latitude_options;
-                            selected: selected_high_latitude;
-                            picked(value) => { set-high-latitude(value); }
+                        Text { text: "High-latitude rule"; font-size: 13px; font-weight: 600; color: Palette.ink; }
+                        for rule in high_lat_rules : Rectangle {
+                            background: rule.key == selected_high_lat_rule ? Palette.accent-soft : Palette.surface;
+                            border-color: rule.key == selected_high_lat_rule ? Palette.accent : Palette.border;
+                            border-width: 1px;
+                            border-radius: Palette.radius-small;
+                            VerticalLayout {
+                                padding: 10px;
+                                spacing: 4px;
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text { text: rule.label; font-size: 13px; font-weight: 600; color: Palette.ink; }
+                                    Text { text: rule.label-ar; font-size: 12px; color: Palette.ink-muted; horizontal-alignment: end; }
+                                }
+                                Text { text: rule.desc; font-size: 11px; color: Palette.ink-muted; wrap: word-wrap; }
+                            }
+                            TouchArea { clicked => { set-high-lat(rule.key); } }
+                        }
+                        Text {
+                            text: "These rules change Fajr and Isha only, and only near the polar circles. They never create a sunrise or sunset.";
+                            font-size: 11px;
+                            color: Palette.ink-muted;
+                            wrap: word-wrap;
                         }
                         Segmented {
                             label: "Rounding";
                             options: rounding_options;
                             selected: selected_rounding;
                             picked(value) => { set-rounding(value); }
+                        }
+                        Action {
+                            label: fine_tune_open ? "Hide fine-tune" : (fine_tune_summary == "" ? "Fine-tune times" : "Fine-tune times · " + fine_tune_summary);
+                            primary: false;
+                            triggered => { fine_tune_open = !fine_tune_open; }
+                        }
+                        if (fine_tune_open) : VerticalLayout {
+                            spacing: 4px;
+                            Stepper { label: "Fajr"; label-ar: "الفجر"; value: fine_tune[0]; step: 1; min-value: -30; max-value: 30; changed(v) => { set-fine-tune("fajr", v); } }
+                            Stepper { label: "Dhuhr"; label-ar: "الظهر"; value: fine_tune[1]; step: 1; min-value: -30; max-value: 30; changed(v) => { set-fine-tune("dhuhr", v); } }
+                            Stepper { label: "Asr"; label-ar: "العصر"; value: fine_tune[2]; step: 1; min-value: -30; max-value: 30; changed(v) => { set-fine-tune("asr", v); } }
+                            Stepper { label: "Maghrib"; label-ar: "المغرب"; value: fine_tune[3]; step: 1; min-value: -30; max-value: 30; changed(v) => { set-fine-tune("maghrib", v); } }
+                            Stepper { label: "Isha"; label-ar: "العشاء"; value: fine_tune[4]; step: 1; min-value: -30; max-value: 30; changed(v) => { set-fine-tune("isha", v); } }
                         }
                     }
                 }
@@ -1114,6 +1434,11 @@ export component MainWindow inherits Window {
                     border-width: 1px;
                     border-radius: Palette.radius;
                     Section { title: "APPEARANCE";
+                        Toggle {
+                            label: "Ramadan mode";
+                            on: ramadan_mode;
+                            toggled(on) => { set-ramadan-mode(on); }
+                        }
                         Segmented {
                             label: "Theme";
                             options: theme_options;
@@ -1352,6 +1677,469 @@ export component MainWindow inherits Window {
                     triggered => { close-settings(); }
                 }
             }
+            }
+        }
+
+        // ---- Phase 5 calendar (Prism §6, Quill §4.4) ----
+        if (page == "calendar") : Flickable {
+            VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+                HorizontalLayout {
+                    spacing: 12px;
+                    Action { label: "Back"; primary: false; triggered => { calendar-back(); } }
+                    Text { text: "Calendar"; font-size: 20px; font-weight: 600; color: Palette.ink; vertical-alignment: center; }
+                    Text { text: "التقويم"; font-size: 16px; color: Palette.ink-muted; vertical-alignment: center; }
+                }
+                if (ramadan_banner == 1) : Rectangle {
+                    background: Palette.accent-soft;
+                    border-color: Palette.gold;
+                    border-width: 1px;
+                    border-radius: Palette.radius-small;
+                    HorizontalLayout {
+                        padding: 12px;
+                        spacing: 12px;
+                        Text { text: "Ramadan"; font-size: 14px; font-weight: 600; color: Palette.ink; vertical-alignment: center; }
+                        Text { text: "رمضان"; font-size: 14px; color: Palette.ink; vertical-alignment: center; }
+                        Rectangle { }
+                        Action { label: "Turn on Ramadan mode"; primary: true; triggered => { set-ramadan-mode(true); } }
+                    }
+                }
+                if (ramadan_banner == 2) : Rectangle {
+                    background: Palette.surface-secondary;
+                    border-radius: Palette.radius-small;
+                    HorizontalLayout {
+                        padding: 12px;
+                        spacing: 12px;
+                        Text { text: "Ramadan has ended — turn off mode?"; font-size: 13px; color: Palette.ink; vertical-alignment: center; }
+                        Rectangle { }
+                        Action { label: "Turn off Ramadan mode"; primary: false; triggered => { set-ramadan-mode(false); } }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Action { label: "‹"; primary: false; enabled: calendar_prev_enabled; triggered => { calendar-nav(-1); } }
+                    Text { text: calendar_month_label; font-size: 16px; font-weight: 600; color: Palette.ink; vertical-alignment: center; }
+                    Text { text: calendar_month_label_ar; font-size: 14px; color: Palette.ink-muted; vertical-alignment: center; }
+                    Action { label: "›"; primary: false; enabled: calendar_next_enabled; triggered => { calendar-nav(1); } }
+                    Rectangle { }
+                    Action { label: "Today"; primary: false; triggered => { calendar-today(); } }
+                }
+                if (hijri_range_note != "") : Text {
+                    text: hijri_range_note;
+                    font-size: 11px;
+                    color: Palette.ink-muted;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Primary:"; font-size: 12px; color: Palette.ink-muted; vertical-alignment: center; }
+                    Action {
+                        label: "Gregorian";
+                        primary: calendar_primary == "greg";
+                        triggered => { set-calendar-primary("greg"); }
+                    }
+                    Action {
+                        label: "Hijri";
+                        primary: calendar_primary == "hijri";
+                        triggered => { set-calendar-primary("hijri"); }
+                    }
+                }
+                GridLayout {
+                    spacing: 4px;
+                    Row {
+                        DayCell { day: calendar_days[0]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[1]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[2]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[3]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[4]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[5]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[6]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                    }
+                    Row {
+                        DayCell { day: calendar_days[7]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[8]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[9]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[10]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[11]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[12]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[13]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                    }
+                    Row {
+                        DayCell { day: calendar_days[14]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[15]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[16]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[17]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[18]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[19]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[20]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                    }
+                    Row {
+                        DayCell { day: calendar_days[21]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[22]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[23]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[24]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[25]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[26]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[27]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                    }
+                    Row {
+                        DayCell { day: calendar_days[28]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[29]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[30]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[31]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[32]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[33]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[34]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                    }
+                    Row {
+                        DayCell { day: calendar_days[35]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[36]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[37]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[38]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[39]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[40]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                        DayCell { day: calendar_days[41]; primary: calendar_primary; picked(iso) => { pick-day(iso); } }
+                    }
+                }
+                if (selected_day_label != "") : VerticalLayout {
+                    spacing: 6px;
+                    Text { text: selected_day_label; font-size: 13px; font-weight: 600; color: Palette.ink; }
+                    for t in selected_day_times : HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: t.name; font-size: 13px; color: Palette.ink; width: 90px; }
+                        Text { text: t.name-ar; font-size: 12px; color: Palette.ink-muted; }
+                        Rectangle { }
+                        if (t.estimated) : Text { text: "Estimated"; font-size: 10px; color: Palette.ink-muted; vertical-alignment: center; }
+                        Text {
+                            text: t.time;
+                            font-size: 13px;
+                            font-weight: 500;
+                            color: t.is-none ? Palette.ink-muted : Palette.ink;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---- Phase 5 city picker (Prism §3, Quill §4.1 verbatim) ----
+        if (page == "city-picker") : FocusScope {
+            key-pressed(event) => {
+                if (event.text == Key.UpArrow) {
+                    nav-result(-1);
+                    return accept;
+                }
+                if (event.text == Key.DownArrow) {
+                    nav-result(1);
+                    return accept;
+                }
+                if (event.text == Key.Return) {
+                    if (highlighted_result >= 0 && highlighted_result < picker_results.length) {
+                        pick-city(picker_results[highlighted_result].id);
+                    }
+                    return accept;
+                }
+                if (event.text == Key.Escape) {
+                    picker-back();
+                    return accept;
+                }
+                reject
+            }
+            VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+                HorizontalLayout {
+                    spacing: 12px;
+                    Action { label: "Back to settings"; primary: false; triggered => { picker-back(); } }
+                    Text {
+                        text: "City picker";
+                        font-size: 20px;
+                        font-weight: 600;
+                        color: Palette.ink;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: "اختيار المدينة";
+                        font-size: 16px;
+                        color: Palette.ink-muted;
+                        vertical-alignment: center;
+                        horizontal-alignment: end;
+                    }
+                }
+                Rectangle {
+                    height: 36px;
+                    background: Palette.surface;
+                    border-color: Palette.border;
+                    border-width: 1px;
+                    border-radius: Palette.radius-small;
+                    TextInput {
+                        x: 10px;
+                        y: 6px;
+                        width: parent.width - 20px;
+                        height: 24px;
+                        text: city_query;
+                        font-size: 14px;
+                        color: Palette.ink;
+                        edited => { search-cities(self.text); }
+                    }
+                    if (city_query == "") : Text {
+                        x: 10px;
+                        y: 8px;
+                        text: "Search cities — English or Arabic";
+                        font-size: 14px;
+                        color: Palette.ink-muted;
+                    }
+                }
+                if (recent_cities.length > 0) : HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Recent"; font-size: 12px; color: Palette.ink-muted; vertical-alignment: center; }
+                    for r in recent_cities: Rectangle {
+                        height: 28px;
+                        width: recent-label.preferred-width + 18px;
+                        border-radius: 14px;
+                        background: Palette.surface-secondary;
+                        recent-label := Text {
+                            text: r.name;
+                            font-size: 12px;
+                            color: Palette.ink;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        TouchArea { clicked => { pick-recent(r.id); } }
+                    }
+                }
+                if (city_disambiguation != "") : Text {
+                    text: city_disambiguation;
+                    font-size: 12px;
+                    color: Palette.ink-muted;
+                    wrap: word-wrap;
+                }
+                if (picker_db_available) : Flickable {
+                    height: 300px;
+                    content-height: picker_results.length * 52px;
+                    VerticalLayout {
+                        spacing: 0px;
+                        for result[i] in picker_results: Rectangle {
+                            height: 52px;
+                            background: i == highlighted_result ? Palette.surface-secondary : Palette.surface;
+                            border-color: Palette.border;
+                            border-width: 0.5px;
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                spacing: 8px;
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    alignment: center;
+                                    Text { text: result.name; font-size: 15px; font-weight: 600; color: Palette.ink; }
+                                    if (result.name-ar != "") : Text {
+                                        text: result.name-ar;
+                                        font-size: 13px;
+                                        color: Palette.ink-muted;
+                                        horizontal-alignment: end;
+                                    }
+                                }
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    alignment: center;
+                                    Text { text: result.country; font-size: 13px; color: Palette.ink; horizontal-alignment: end; }
+                                    Text { text: result.region-line; font-size: 11px; color: Palette.ink-muted; horizontal-alignment: end; }
+                                }
+                            }
+                            TouchArea {
+                                clicked => { pick-city(result.id); }
+                            }
+                        }
+                    }
+                }
+                if (city_cap_visible) : Text {
+                    text: "Showing the first 50 — keep typing to narrow the search.";
+                    font-size: 12px;
+                    color: Palette.ink-muted;
+                }
+                if (picker_message != "") : VerticalLayout {
+                    spacing: 4px;
+                    Text { text: picker_message; font-size: 14px; font-weight: 600; color: Palette.ink; wrap: word-wrap; }
+                    if (picker_message_body != "") : Text {
+                        text: picker_message_body;
+                        font-size: 12px;
+                        color: Palette.ink-muted;
+                        wrap: word-wrap;
+                    }
+                }
+                Text {
+                    text: "Search runs offline over the bundled city list.";
+                    font-size: 11px;
+                    color: Palette.ink-muted;
+                }
+                Rectangle {
+                    background: Palette.surface-secondary;
+                    border-radius: Palette.radius-small;
+                    opacity: gps_available ? 1.0 : 0.6;
+                    VerticalLayout {
+                        padding: 10px;
+                        spacing: 2px;
+                        Text { text: "Use my location"; font-size: 13px; font-weight: 600; color: Palette.ink; }
+                        Text {
+                            text: "Read once, stays on this device. Nothing leaves this device.";
+                            font-size: 11px;
+                            color: Palette.ink-muted;
+                            wrap: word-wrap;
+                        }
+                    }
+                    TouchArea { clicked => { if (!gps_busy) { use-gps(); } } }
+                }
+                if (gps_confirm_visible) : Rectangle {
+                    background: Palette.surface-secondary;
+                    border-color: Palette.accent;
+                    border-width: 1px;
+                    border-radius: Palette.radius-small;
+                    VerticalLayout {
+                        padding: 12px;
+                        spacing: 6px;
+                        Text { text: "Use these coordinates?"; font-size: 14px; font-weight: 600; color: Palette.ink; }
+                        Text {
+                            text: "Latitude " + gps_lat + ", longitude " + gps_lon + ". This becomes your location.";
+                            font-size: 12px;
+                            color: Palette.ink;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Action { label: "Use"; primary: true; triggered => { gps-confirm(); } }
+                            Action { label: "Cancel"; primary: false; triggered => { gps-cancel(); } }
+                        }
+                    }
+                }
+                Action {
+                    label: "Enter coordinates manually";
+                    primary: false;
+                    triggered => { coords_open = !coords_open; }
+                }
+                if (coords_open) : VerticalLayout {
+                    spacing: 8px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        VerticalLayout {
+                            spacing: 2px;
+                            Text { text: "Latitude"; font-size: 12px; color: Palette.ink-muted; }
+                            Rectangle {
+                                width: 160px;
+                                height: 30px;
+                                background: Palette.surface;
+                                border-color: Palette.border;
+                                border-width: 1px;
+                                border-radius: Palette.radius-small;
+                                TextInput {
+                                    x: 8px; y: 5px;
+                                    width: parent.width - 16px; height: 20px;
+                                    text: manual_lat;
+                                    font-size: 13px;
+                                    color: Palette.ink;
+                                    edited => { manual_lat = self.text; }
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            spacing: 2px;
+                            Text { text: "Longitude"; font-size: 12px; color: Palette.ink-muted; }
+                            Rectangle {
+                                width: 160px;
+                                height: 30px;
+                                background: Palette.surface;
+                                border-color: Palette.border;
+                                border-width: 1px;
+                                border-radius: Palette.radius-small;
+                                TextInput {
+                                    x: 8px; y: 5px;
+                                    width: parent.width - 16px; height: 20px;
+                                    text: manual_lon;
+                                    font-size: 13px;
+                                    color: Palette.ink;
+                                    edited => { manual_lon = self.text; }
+                                }
+                            }
+                        }
+                    }
+                    Text { text: "Timezone"; font-size: 12px; color: Palette.ink-muted; }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Rectangle {
+                            width: 260px;
+                            height: 30px;
+                            background: Palette.surface;
+                            border-color: Palette.border;
+                            border-width: 1px;
+                            border-radius: Palette.radius-small;
+                            TextInput {
+                                x: 8px; y: 5px;
+                                width: parent.width - 16px; height: 20px;
+                                text: manual_tz_query;
+                                font-size: 13px;
+                                color: Palette.ink;
+                                edited => { search-tz(self.text); }
+                            }
+                            if (manual_tz_query == "") : Text {
+                                x: 8px;
+                                y: 7px;
+                                text: "Search IANA timezones";
+                                font-size: 13px;
+                                color: Palette.ink-muted;
+                            }
+                        }
+                        Text { text: manual_tz; font-size: 13px; color: Palette.accent; vertical-alignment: center; }
+                    }
+                    if (tz_results.length > 0) : Flickable {
+                        height: 120px;
+                        content-height: tz_results.length * 26px;
+                        VerticalLayout {
+                            for zone in tz_results: Rectangle {
+                                height: 26px;
+                                background: Palette.surface-secondary;
+                                Text {
+                                    text: zone.label;
+                                    font-size: 12px;
+                                    color: Palette.ink;
+                                    vertical-alignment: center;
+                                    x: 8px;
+                                }
+                                TouchArea { clicked => { pick-tz(zone.value); } }
+                            }
+                        }
+                    }
+                    Text { text: "Name this place (optional)"; font-size: 12px; color: Palette.ink-muted; }
+                    Rectangle {
+                        width: 320px;
+                        height: 30px;
+                        background: Palette.surface;
+                        border-color: Palette.border;
+                        border-width: 1px;
+                        border-radius: Palette.radius-small;
+                        TextInput {
+                            x: 8px; y: 5px;
+                            width: parent.width - 16px; height: 20px;
+                            text: manual_name;
+                            font-size: 13px;
+                            color: Palette.ink;
+                            edited => { manual_name = self.text; }
+                        }
+                    }
+                    if (manual_error != "") : Text {
+                        text: manual_error;
+                        font-size: 12px;
+                        color: Palette.danger;
+                        wrap: word-wrap;
+                    }
+                    Action {
+                        label: "Use these coordinates";
+                        primary: true;
+                        triggered => { apply-coords(manual_lat, manual_lon, manual_tz, manual_name); }
+                    }
+                }
+                Text {
+                    text: "City data: GeoNames (CC BY 4.0) · geonames.org";
+                    font-size: 11px;
+                    color: Palette.ink-muted;
+                }
             }
         }
 

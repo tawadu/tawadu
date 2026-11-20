@@ -1,0 +1,39 @@
+City data derived from the GeoNames Gazetteer (https://www.geonames.org/),
+`cities1000.zip` — all cities with population > 1000 or seats of an
+administrative division down to PPLA3. This work is licensed under a
+Creative Commons Attribution 4.0 License
+(https://creativecommons.org/licenses/by/4.0/). GeoNames is a project of
+Unxos GmbH, St. Gallen, Switzerland. The data is provided "as is" without
+warranty or any representation of accuracy, timeliness or completeness.
+The database was filtered and re-formatted for Tawadu; the source records
+were otherwise unmodified.
+
+Indication of changes (CC BY 4.0 §3.a.2), extended to the DERIVED database
+per docs/phase5-city-audit.md §4: the raw dump was trimmed to a derived
+SQLite database (assets/cities.db) — 19-column geoname order parsed
+(timezone = column 18), search-normalization columns and indexes added,
+the 28 curated Tawadu display names (Arabic with diacritics) applied as
+overrides, and alternate names re-keyed as normalized search aliases.
+Source records (ids, names, coordinates, population, timezones) were
+otherwise unmodified. The raw zip is NOT redistributed in this repository.
+
+Provenance (binding §8.1–8.3, §8.9 — re-verify with scripts/build_city_db.py):
+  Source URL:   https://download.geonames.org/export/dump/cities1000.zip
+  Raw dump:     11,101,196 bytes
+                SHA-256 1dcfe6ea1731529fe53d54c8c524add5a8f4b198cff7ff0ab5e5b774d528db17
+                Last-Modified: Thu, 19 Nov 2026 02:52:31 GMT
+                ETag: "a9640c-6609838032c63"
+                (live-byte re-verified at build time, 2026-11-20 — no rotation)
+  Derived DB:   assets/cities.db — 41,771,008 bytes
+                SHA-256 640f86c48ed0ac11e7ae29a95d334cfd95e6d29eacc7286d725de88849dfdbcc
+                172,038 records · 807,526 alias keys · 392 distinct IANA
+                timezones (all parse with the app's chrono-tz 0.10 — gated
+                by tawadu-core cities::tests) · 28/28 curated overrides.
+  Build:        scripts/build_city_db.py (committed, stdlib only,
+                re-runnable end-to-end; deterministic for the same input
+                bytes + SQLite version — built with SQLite 3.53.1).
+  Ledger:       docs/phase5-city-sources.md (§1.2 attribution, §8 binding
+                conditions, §10 Atlas decisions) · audit APPROVE:
+                docs/phase5-city-audit.md.
+  Dump rotates DAILY: on rotation, record the new hash + Last-Modified
+  here AND in the ledger in the SAME PR (rotation is not a rejection).

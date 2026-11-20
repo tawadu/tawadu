@@ -6,6 +6,35 @@ export struct Row {
     time: string,
     is_next: bool,
     is_prayer: bool,
+    estimated: bool,   // Phase 5: rule-produced time (muted caption)
+    is_none: bool,     // Phase 5: genuinely undefined — em dash, info dot
+}
+
+// Phase 5 calendar (Prism §6/§8; both numbers engine-provided).
+export struct CalendarDay {
+    iso: string,
+    gregorian: int,
+    hijri: int,
+    in-month: bool,
+    is-today: bool,
+    is-ramadan: bool,
+}
+
+export struct DayTime {
+    name: string,
+    name-ar: string,
+    time: string,
+    estimated: bool,
+    is-none: bool,
+}
+
+// Phase 5 high-latitude rule rows (Prism §5.1, Quill §4.3 verbatim).
+export struct RuleOption {
+    key: string,
+    label: string,
+    label-ar: string,
+    desc: string,
+    desc-ar: string,
 }
 
 export struct CityRow {
@@ -92,4 +121,30 @@ export struct ContextChip {
     key: string,
     label: string,
     active: bool,
+}
+
+// ---- Phase 5 city picker (Prism §8; region-line is Rust-composed per the
+// "never compose factual strings in Slint" gotcha — admin1 code · IANA tz) ----
+
+// Phase 5 mosque profiles (Prism §8; offsets-summary Rust-composed).
+export struct MosqueProfile {
+    id: string,
+    name: string,
+    name-ar: string,
+    offsets-summary: string,
+    is-active: bool,
+    fajr: int,
+    dhuhr: int,
+    asr: int,
+    maghrib: int,
+    isha: int,
+}
+
+export struct CityResult {
+    id: string,
+    name: string,
+    name-ar: string,
+    country: string,
+    region-line: string,
+    timezone: string,
 }

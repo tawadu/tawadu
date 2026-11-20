@@ -155,6 +155,27 @@ pub struct Settings {
     /// still loads: no packs chosen, no trim, fixed shuffle seed.
     #[serde(default)]
     pub audio: AudioSettings,
+    /// Phase 5: most-recent-first picked places (<= 5, deduped).
+    /// `serde(default)` so pre-Phase-5 blobs upgrade with empty recents and
+    /// the CHOSEN LOCATION PRESERVED — never a wholesale defaults fallback.
+    #[serde(default)]
+    pub recent_cities: Vec<StoredLocation>,
+    /// Phase 5: the active mosque profile id (None = no active mosque;
+    /// legacy settings.iqamah applies). `serde(default)` so pre-Phase-5
+    /// blobs upgrade with NO active mosque — never a silent assignment.
+    #[serde(default)]
+    pub active_mosque: Option<String>,
+    /// Phase 5 §6.2: Ramadan mode (opt-in, never auto-applied). Exactly
+    /// three effects: theme suggestion, suhur/iftar pre-alert copy,
+    /// calendar emphasis. Nothing invented.
+    #[serde(default)]
+    pub ramadan_mode: bool,
+    /// The theme to restore when Ramadan mode turns off (remembered).
+    #[serde(default)]
+    pub pre_ramadan_theme: Option<Theme>,
+    /// Calendar toggle: which numbering is primary (dual always shown).
+    #[serde(default)]
+    pub calendar_hijri_primary: bool,
 }
 
 impl Default for Settings {
@@ -178,6 +199,11 @@ impl Default for Settings {
             athan_volume: 0.8,
             notifications: NotificationSettings::default(),
             audio: AudioSettings::default(),
+            recent_cities: Vec::new(),
+            active_mosque: None,
+            ramadan_mode: false,
+            pre_ramadan_theme: None,
+            calendar_hijri_primary: false,
         }
     }
 }
@@ -185,6 +211,31 @@ impl Default for Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pre_phase5_blob_upgrades_with_location_preserved_and_empty_recents() {
+        let mut blob = serde_json::to_value(Settings::default()).unwrap();
+        let obj = blob.as_object_mut().unwrap();
+        obj.remove("recent_cities");
+        obj.remove("active_mosque");
+        obj.remove("ramadan_mode");
+        obj.remove("pre_ramadan_theme");
+        obj.remove("calendar_hijri_primary");
+        obj["location"]["name"] = serde_json::json!("Oslo");
+        let upgraded: Settings = serde_json::from_value(blob).unwrap();
+        assert_eq!(upgraded.location.name, "Oslo", "chosen city preserved");
+        assert!(upgraded.recent_cities.is_empty());
+        assert!(
+            upgraded.active_mosque.is_none(),
+            "no silent mosque assignment"
+        );
+        assert!(
+            !upgraded.ramadan_mode,
+            "Ramadan mode is opt-in, never auto-on"
+        );
+        assert!(upgraded.pre_ramadan_theme.is_none());
+        assert!(!upgraded.calendar_hijri_primary);
+    }
 
     #[test]
     fn pre_autostart_blob_upgrades_with_autostart_off() {

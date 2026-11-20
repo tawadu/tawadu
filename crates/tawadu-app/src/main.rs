@@ -8,6 +8,7 @@
 
 mod autostart;
 mod cli;
+mod gps;
 mod restore;
 mod tray;
 
@@ -16,14 +17,20 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, NaiveTime, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, NaiveTime, Utc};
 use slint::{ModelRc, SharedString, Timer, TimerMode, VecModel};
 use tawadu_core::athkar::{self, Context, ContextTimes, Corpus};
-use tawadu_core::hijri::from_gregorian;
+use tawadu_core::cities::{CityDb, CityHit};
+use tawadu_core::hijri::{from_gregorian, HijriDate, TABLE_FIRST_YEAR, TABLE_LAST_YEAR};
 use tawadu_core::locations::{find_city, Location, CITIES};
+use tawadu_core::locations::{push_recent, timezone_list, validate_coordinates};
+use tawadu_core::mosques::effective_iqamah;
 use tawadu_core::notify::{self, NotificationKind};
-use tawadu_core::prayer::{self, HighLatitudeRule, Madhab, Method, Prayer, PrayerTimes, Rounding};
-use tawadu_core::scheduler::{self, EventKind, IqamahOffsets, Timeline};
+use tawadu_core::prayer::{
+    self, explain_strip, provenance, HighLatitudeRule, Madhab, Method, Prayer, PrayerTimes,
+    Rounding, TimeSource,
+};
+use tawadu_core::scheduler::{self, EventKind, Timeline};
 use tawadu_core::settings::{AudioSettings, EventVoice, Language, PlaybackMode, Settings, Theme};
 use tawadu_core::storage::{LoadOutcome, Storage};
 
@@ -105,6 +112,14 @@ impl SaveDebounce {
 /// Everything the interface can change, plus where it is kept.
 /// Athkar UI state (Phase 4). RefCell for the same reason as debounce:
 /// apply_home takes &AppState; the AppState Mutex serializes access.
+/// City-picker UI state (Phase 5). RefCell like debounce/athkar: the
+/// AppState Mutex serializes access; callbacks take &AppState.
+struct PickerUi {
+    pending_query: Option<String>,
+    results: Vec<CityHit>,
+    highlight: i32,
+}
+
 struct AthkarUi {
     ctx: Context,
     loaded_ctx: Option<Context>,
@@ -132,6 +147,22 @@ struct AppState {
     corpus: Option<Corpus>,
     /// Athkar context/progress UI state.
     athkar: std::cell::RefCell<AthkarUi>,
+    /// Bundled GeoNames city DB (Phase 5). None = fail-soft: the picker
+    /// says so honestly and manual coordinates still work.
+    city_db: Option<CityDb>,
+    picker: std::cell::RefCell<PickerUi>,
+    /// Mosque profiles (Phase 5 v1: name + offsets; storage v4 is the
+    /// source of truth, this is the UI/scheduler cache).
+    mosques: Vec<tawadu_core::mosques::MosqueProfile>,
+    /// Two-step remove confirm: the id awaiting confirmation ("" = none).
+    mosque_confirm: std::cell::RefCell<String>,
+    /// Calendar view state (Phase 5): the viewed month + selected day.
+    calendar: std::cell::RefCell<CalendarUi>,
+}
+
+struct CalendarUi {
+    anchor: NaiveDate,
+    selected: Option<NaiveDate>,
 }
 
 /// Decode a serde snake_case key back into a config value.
@@ -293,15 +324,16 @@ fn countdown(to: chrono::DateTime<Utc>) -> String {
 /// athkar window at Isha+30, can fall after local midnight — and today's timeline
 /// does not contain them. That only happens at high latitude, which is exactly
 /// where the app promises not to invent or drop a time.
-fn day(location: &Location, settings: &Settings) -> (PrayerTimes, Timeline) {
+fn day(
+    location: &Location,
+    settings: &Settings,
+    mosques: &[tawadu_core::mosques::MosqueProfile],
+) -> (PrayerTimes, Timeline) {
     let date = location.local(now()).date_naive();
-    let iqamah = IqamahOffsets {
-        fajr: settings.iqamah.fajr,
-        dhuhr: settings.iqamah.dhuhr,
-        asr: settings.iqamah.asr,
-        maghrib: settings.iqamah.maghrib,
-        isha: settings.iqamah.isha,
-    };
+    // Phase 5: the ACTIVE mosque profile binds the scheduler offsets using
+    // the app's single location; no active profile -> legacy settings.iqamah
+    // (effective_iqamah never silently reassigns — core-tested).
+    let iqamah = effective_iqamah(settings, mosques);
 
     let times = prayer::compute(date, location.coordinates, &settings.config);
     let mut events = scheduler::build(times.clone(), &iqamah, settings.pre_alert_minutes).events;
@@ -335,11 +367,19 @@ fn next_prayer(
 /// Push the computed day into the home surface.
 fn apply_home(ui: &MainWindow, state: &AppState) {
     let location = state.location();
-    let (times, timeline) = day(&location, &state.settings);
+    let (times, timeline) = day(&location, &state.settings, &state.mosques);
     let next = next_prayer(&times, &location, &state.settings);
     let now = now();
 
-    ui.set_location_name(location.name.clone().into());
+    let display_name = if location.name.is_empty() {
+        format!(
+            "{:.4}, {:.4}",
+            location.coordinates.latitude, location.coordinates.longitude
+        )
+    } else {
+        location.name.clone()
+    };
+    ui.set_location_name(display_name.into());
     ui.set_location_name_ar(location.name_ar.clone().into());
     let hijri = from_gregorian(location.local(now).date_naive())
         .map(|h| format!("{} {} {} هـ", h.day, h.month_name_ar(), h.year))
@@ -353,9 +393,9 @@ fn apply_home(ui: &MainWindow, state: &AppState) {
             ui.set_countdown(countdown(at).into());
         }
         None => {
-            ui.set_next_name("—".into());
-            ui.set_next_name_ar("—".into());
-            ui.set_countdown("--:--:--".into());
+            ui.set_next_name("\u{2014}".into());
+            ui.set_next_name_ar("\u{2014}".into());
+            ui.set_countdown("\u{2014}".into());
         }
     }
 
@@ -366,6 +406,29 @@ fn apply_home(ui: &MainWindow, state: &AppState) {
         .map(|event| format!("{} · {}", event.label, hhmm(&location, event.at)))
         .unwrap_or_else(|| "Set your mosque's iqamah offsets".to_string());
     ui.set_next_iqamah(iqamah_text.into());
+    // Phase 5: active-mosque caption (Quill home-caption, Rust-composed).
+    let active = state
+        .settings
+        .active_mosque
+        .as_ref()
+        .and_then(|id| state.mosques.iter().find(|m| &m.id == id));
+    let (caption, caption_ar) = match active {
+        Some(m) => {
+            // F4: activation is name-gated — the active profile always has
+            // a real user-given name; no fabricated fallback.
+            let name = m.name.as_str();
+            let summary = m.offsets_summary();
+            let cap = if summary.is_empty() {
+                name.to_string()
+            } else {
+                format!("{name} · {summary}")
+            };
+            (cap, m.name_ar.clone())
+        }
+        None => (String::new(), String::new()),
+    };
+    ui.set_next_iqamah_caption(caption.into());
+    ui.set_next_iqamah_caption_ar(caption_ar.into());
 
     // Phase 4: the real athkar engine — context-aware card, honest progress.
     apply_athkar(ui, state, &location, &times);
@@ -379,32 +442,100 @@ fn apply_home(ui: &MainWindow, state: &AppState) {
         Prayer::Isha,
     ];
     let next_name = next.map(|(prayer, _)| prayer);
+    // Phase 5: per-event provenance — estimated / undefined markers and the
+    // explanation strip come from the ENGINE, never UI-invented facts.
+    let prov = provenance(
+        location.local(now).date_naive(),
+        location.coordinates,
+        &state.settings.config,
+    );
+    let source_of = |prayer: Prayer| match prayer {
+        Prayer::Fajr => prov.fajr,
+        Prayer::Sunrise => prov.sunrise,
+        Prayer::Dhuhr => prov.dhuhr,
+        Prayer::Asr => prov.asr,
+        Prayer::Maghrib => prov.maghrib,
+        Prayer::Isha => prov.isha,
+        Prayer::Qiyam => TimeSource::Sun,
+    };
     let rows: Vec<Row> = order
         .into_iter()
         .map(|prayer| {
-            let time = times
-                .time(prayer)
-                .map(|instant| hhmm(&location, instant))
-                .unwrap_or_else(|| "--:--".to_string());
+            let instant = times.time(prayer);
+            let time = instant
+                .map(|i| hhmm(&location, i))
+                .unwrap_or_else(|| "\u{2014}".to_string());
+            let src = source_of(prayer);
             row(
                 prayer.name_en(),
                 prayer.name_ar(),
                 time,
                 Some(prayer) == next_name,
                 prayer.is_prayer(),
+                src == TimeSource::Rule,
+                instant.is_none(),
             )
         })
         .collect();
     ui.set_rows(ModelRc::new(VecModel::from(rows)));
+
+    // Explanation strip (Prism §5.3): polar state or any estimated event.
+    // Facts the engine cannot supply are OMITTED, never filled in.
+    let rule_label = match state.settings.config.high_latitude_rule {
+        HighLatitudeRule::MiddleOfTheNight => "Middle of the night",
+        HighLatitudeRule::SeventhOfTheNight => "Seventh of the night",
+        HighLatitudeRule::TwilightAngle => "Twilight angle",
+    };
+    // Sentinel F1: the strip is composed PER EVENT by the core from the
+    // provenance (engine-bound, unit-tested for both mixed exit-gate cases)
+    // — never a template that names events the engine contradicts.
+    let moonsighting_substituted = state.settings.config.method == Method::MoonsightingCommittee
+        && location.coordinates.latitude.abs() >= 55.0;
+    let (explain_visible, explain_title, explain_body) =
+        match explain_strip(&location.name, rule_label, &prov, moonsighting_substituted) {
+            Some((t, b)) => (true, t, b),
+            None => (false, String::new(), String::new()),
+        };
+    // Sentinel F2: the variance figure is engine-derived (max Fajr/Isha
+    // spread across the supported methods here today) — never a constant.
+    let variance_line = match prayer::method_spread_minutes(
+        location.local(now).date_naive(),
+        location.coordinates,
+        &state.settings.config,
+    ) {
+        Some(1) => "Different sources can differ by about 1 minute. Fine-tune any prayer below."
+            .to_string(),
+        Some(n) => format!(
+            "Different sources can differ by about {n} minutes. Fine-tune any prayer below."
+        ),
+        None => {
+            "Different sources can give different times. Fine-tune any prayer below.".to_string()
+        }
+    };
+    ui.set_variance_line(variance_line.into());
+    ui.set_explain_visible(explain_visible);
+    ui.set_explain_title(explain_title.into());
+    ui.set_explain_body(explain_body.into());
+    ui.set_next_none_visible(next.is_none());
 }
 
-fn row(name: &str, name_ar: &str, time: String, is_next: bool, is_prayer: bool) -> Row {
+fn row(
+    name: &str,
+    name_ar: &str,
+    time: String,
+    is_next: bool,
+    is_prayer: bool,
+    estimated: bool,
+    is_none: bool,
+) -> Row {
     Row {
         name: name.into(),
         name_ar: name_ar.into(),
         time: time.into(),
         is_next,
         is_prayer,
+        estimated,
+        is_none,
     }
 }
 
@@ -542,6 +673,416 @@ fn build_athkar_view(ui: &MainWindow, corpus: &Corpus, a: &AthkarUi) {
     ui.set_athkar_context_key(a.ctx.key().into());
 }
 
+/// Locate the bundled derived city DB: next to the exe (installed layout,
+/// Phase 6 revisits) or the workspace assets dir in dev. Opening is cheap —
+/// indexes are PRE-BUILT by scripts/build_city_db.py (the off-UI-thread
+/// index condition is satisfied at build time, not startup).
+fn city_db_path() -> Option<std::path::PathBuf> {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for cand in [dir.join("assets/cities.db"), dir.join("cities.db")] {
+                if cand.exists() {
+                    return Some(cand);
+                }
+            }
+        }
+    }
+    let dev = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/cities.db");
+    if dev.exists() {
+        return Some(dev);
+    }
+    None
+}
+
+fn recents_model(state: &AppState) -> ModelRc<CityResult> {
+    let rows: Vec<CityResult> = state
+        .settings
+        .recent_cities
+        .iter()
+        .enumerate()
+        .map(|(i, r)| CityResult {
+            id: i.to_string().into(),
+            name: if r.name.is_empty() {
+                format!("{:.4}, {:.4}", r.latitude, r.longitude)
+            } else {
+                r.name.clone()
+            }
+            .into(),
+            name_ar: r.name_ar.clone().into(),
+            country: String::new().into(),
+            region_line: r.timezone.clone().into(),
+            timezone: r.timezone.clone().into(),
+        })
+        .collect();
+    ModelRc::new(VecModel::from(rows))
+}
+
+/// Run a picker search: prefix (+substring fallback) over the bundled DB,
+/// population-ranked, capped 50 with the honest cap caption; duplicate
+/// names get the disambiguation caption; every row carries country +
+/// admin1 · IANA zone (Rust-composed runs, never Slint arithmetic).
+fn run_picker_search(ui: &MainWindow, state: &AppState, query: &str) {
+    let Some(db) = &state.city_db else {
+        ui.set_picker_db_available(false);
+        // N2: Quill phase5-error-db-missing-title/body verbatim.
+        ui.set_picker_message("City database not found".into());
+        ui.set_picker_message_body(
+            "The app could not read its bundled city database. Reinstall the app to restore it."
+                .into(),
+        );
+        return;
+    };
+    ui.set_picker_db_available(true);
+    // N2: a DB ERROR is not "no results" — honest generic error copy.
+    let hits = match db.search(query, 50) {
+        Ok(h) => h,
+        Err(e) => {
+            log::error!("city search failed: {e}");
+            ui.set_picker_message("Something went wrong".into());
+            ui.set_picker_message_body(
+                "Try again; if it keeps happening, reinstall the app.".into(),
+            );
+            return;
+        }
+    };
+    let disamb = if hits.len() > 1 {
+        let name = hits[0].name.to_lowercase();
+        let n = hits
+            .iter()
+            .filter(|h| h.name.to_lowercase() == name)
+            .count();
+        if n > 1 {
+            format!("{n} places share this name — choose by region and country.")
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+    let rows: Vec<CityResult> = hits
+        .iter()
+        .map(|h| CityResult {
+            id: h.geonameid.to_string().into(),
+            name: h.name.clone().into(),
+            name_ar: h.name_ar.clone().into(),
+            country: h.country.clone().into(),
+            region_line: format!("{} · {}", h.admin1, h.timezone.name()).into(),
+            timezone: h.timezone.name().into(),
+        })
+        .collect();
+    let capped = hits.len() >= 50;
+    let empty = hits.is_empty();
+    let mut p = state.picker.borrow_mut();
+    p.results = hits;
+    p.highlight = if empty { -1 } else { 0 };
+    ui.set_highlighted_result(p.highlight);
+    drop(p);
+    ui.set_picker_results(ModelRc::new(VecModel::from(rows)));
+    ui.set_city_cap_visible(capped);
+    ui.set_city_disambiguation(disamb.into());
+    if empty && !query.trim().is_empty() {
+        ui.set_picker_message(format!("No matches for “{}”.", query.trim()).into());
+        ui.set_picker_message_body(
+            "Try the Arabic name, enter coordinates manually, or use your location.".into(),
+        );
+    } else {
+        ui.set_picker_message("".into());
+        ui.set_picker_message_body("".into());
+    }
+}
+
+/// Apply a chosen place: settings + recents ride the debounced save path;
+/// the scheduler wakes; the status line confirms (Quill selected-message).
+fn apply_location(ui: &MainWindow, state: &mut AppState, loc: tawadu_core::locations::Location) {
+    let stored = tawadu_core::settings::StoredLocation::from_location(&loc);
+    let label = if loc.name.is_empty() {
+        format!(
+            "{:.4}, {:.4}",
+            loc.coordinates.latitude, loc.coordinates.longitude
+        )
+    } else {
+        loc.name.clone()
+    };
+    state.settings.location = stored.clone();
+    push_recent(&mut state.settings.recent_cities, stored);
+    state.status = format!("Location set to {label}.");
+    state.changed();
+    if let Some(wake) = &state.wake {
+        let _ = wake.send(());
+    }
+    apply_home(ui, state);
+    apply_settings(ui, state);
+}
+
+/// F4: Add creates an in-memory DRAFT only — nothing touches storage until
+/// the user gives a name (create-on-first-name). Dismissing an unnamed
+/// draft discards it; a named profile is never discarded by this path.
+fn add_mosque_draft(state: &mut AppState) -> String {
+    let id = format!("m{}", now().timestamp_millis());
+    state
+        .mosques
+        .push(tawadu_core::mosques::MosqueProfile::new(id.clone()));
+    id
+}
+
+fn discard_unnamed_mosque(state: &mut AppState, id: &str) {
+    let unnamed = state
+        .mosques
+        .iter()
+        .find(|m| m.id == id)
+        .map(|m| !m.is_named())
+        .unwrap_or(false);
+    if !unnamed {
+        return;
+    }
+    if let Some(storage) = &state.storage {
+        // No-op if the draft was never saved; also cleans a profile whose
+        // name was later emptied — unnamed never stays persisted.
+        let _ = storage.delete_mosque(id);
+    }
+    state.mosques.retain(|m| m.id != id);
+    if state.settings.active_mosque.as_deref() == Some(id) {
+        state.settings.active_mosque = None;
+    }
+}
+
+/// F4 (Sentinel delta): the SOLE persistence gate for mosque edits —
+/// EN name, AR name, per-prayer offsets. Named → save (create-on-first-
+/// name); unnamed → never persisted, and any row a previous keystroke or
+/// an older build left behind is deleted. Invariant: no `save_mosque`
+/// call site exists outside this gate.
+fn persist_mosque_edit(state: &mut AppState, id: &str) {
+    let named = state
+        .mosques
+        .iter()
+        .find(|m| m.id == id)
+        .map(|m| m.is_named())
+        .unwrap_or(false);
+    if let Some(storage) = &state.storage {
+        if named {
+            if let Some(m) = state.mosques.iter().find(|m| m.id == id) {
+                let _ = storage.save_mosque(m);
+            }
+        } else {
+            // Unnamed never STAYS persisted: clear the row an older
+            // build's unconditional save may have left behind.
+            let _ = storage.delete_mosque(id);
+        }
+    }
+}
+
+/// F4 (Sentinel delta): EN-name edit, funneled through the single gate.
+fn set_mosque_name(state: &mut AppState, id: &str, name: &str) -> bool {
+    if let Some(m) = state.mosques.iter_mut().find(|m| m.id == id) {
+        m.name = name.to_string();
+        persist_mosque_edit(state, id);
+        true
+    } else {
+        false
+    }
+}
+
+/// F4 (Sentinel delta): AR-name edit — same gate as the EN name. An
+/// Arabic name alone does not name a profile (activation keys on the
+/// EN name), so it must not persist one either.
+fn set_mosque_name_ar(state: &mut AppState, id: &str, name: &str) -> bool {
+    if let Some(m) = state.mosques.iter_mut().find(|m| m.id == id) {
+        m.name_ar = name.to_string();
+        persist_mosque_edit(state, id);
+        true
+    } else {
+        false
+    }
+}
+
+/// F4 (Sentinel delta): per-prayer offset edit — same gate; the stepper
+/// never persists an unnamed draft.
+fn set_mosque_offset(state: &mut AppState, id: &str, prayer: &str, value: i64) -> bool {
+    if let Some(m) = state.mosques.iter_mut().find(|m| m.id == id) {
+        match prayer {
+            "fajr" => m.offsets.fajr = value.clamp(0, 60),
+            "dhuhr" => m.offsets.dhuhr = value.clamp(0, 60),
+            "asr" => m.offsets.asr = value.clamp(0, 60),
+            "maghrib" => m.offsets.maghrib = value.clamp(0, 60),
+            "isha" => m.offsets.isha = value.clamp(0, 60),
+            _ => return false,
+        }
+        persist_mosque_edit(state, id);
+        true
+    } else {
+        false
+    }
+}
+
+/// F4 (Sentinel delta): starting a new draft first discards any previous
+/// UNNAMED draft — Add never orphans an in-flight draft. Named profiles
+/// are untouched (they already persisted).
+fn begin_mosque_draft(state: &mut AppState, current_editing: &str) -> String {
+    if !current_editing.is_empty() {
+        discard_unnamed_mosque(state, current_editing);
+    }
+    add_mosque_draft(state)
+}
+
+/// F4 (Sentinel delta), defense in depth at load: unnamed rows an older
+/// build's unconditional saves may have persisted are dropped from memory
+/// AND deleted from storage; an active pointer at a dropped row is
+/// disarmed (None). A pointer already dangling is left alone —
+/// `effective_iqamah` falls back honestly.
+fn prune_unnamed_mosques(
+    storage: Option<&Storage>,
+    mosques: Vec<tawadu_core::mosques::MosqueProfile>,
+    active_mosque: Option<String>,
+) -> (Vec<tawadu_core::mosques::MosqueProfile>, Option<String>) {
+    let mut active_mosque = active_mosque;
+    for m in mosques.iter().filter(|m| !m.is_named()) {
+        if let Some(storage) = storage {
+            let _ = storage.delete_mosque(&m.id);
+        }
+        if active_mosque.as_deref() == Some(m.id.as_str()) {
+            active_mosque = None;
+        }
+    }
+    let keep: Vec<tawadu_core::mosques::MosqueProfile> =
+        mosques.into_iter().filter(|m| m.is_named()).collect();
+    (keep, active_mosque)
+}
+
+fn mosques_model(state: &AppState) -> ModelRc<MosqueProfile> {
+    let rows: Vec<MosqueProfile> = state
+        .mosques
+        .iter()
+        .map(|m| MosqueProfile {
+            id: m.id.clone().into(),
+            name: m.name.clone().into(),
+            name_ar: m.name_ar.clone().into(),
+            offsets_summary: m.offsets_summary().into(),
+            is_active: state.settings.active_mosque.as_deref() == Some(m.id.as_str()),
+            fajr: m.offsets.fajr as i32,
+            dhuhr: m.offsets.dhuhr as i32,
+            asr: m.offsets.asr as i32,
+            maghrib: m.offsets.maghrib as i32,
+            isha: m.offsets.isha as i32,
+        })
+        .collect();
+    ModelRc::new(VecModel::from(rows))
+}
+
+fn refresh_mosques_ui(ui: &MainWindow, state: &AppState) {
+    ui.set_mosques(mosques_model(state));
+    ui.set_mosque_remove_confirm(state.mosque_confirm.borrow().clone().into());
+}
+
+/// Render the calendar month: dual numbering (both engine values), today
+/// anchor, engine-bound navigation (Umm al-Qura table 1343–1500 AH — never
+/// an extrapolated guess), selected-day times with the same —/estimated
+/// honesty rules, and the Ramadan banner state (Prism §6, Quill §4.4).
+fn build_calendar(ui: &MainWindow, state: &AppState, location: &tawadu_core::locations::Location) {
+    let today = location.local(now()).date_naive();
+    let cal = state.calendar.borrow();
+    let first = cal.anchor.with_day(1).unwrap_or(today);
+    let start = first - chrono::Duration::days(i64::from(first.weekday().num_days_from_monday()));
+    let mut days = Vec::with_capacity(42);
+    for i in 0..42 {
+        let d = start + chrono::Duration::days(i);
+        let h = from_gregorian(d);
+        days.push(CalendarDay {
+            iso: d.format("%Y-%m-%d").to_string().into(),
+            gregorian: d.day() as i32,
+            hijri: h.map(|x| i32::from(x.day)).unwrap_or(0),
+            in_month: d.month() == first.month() && d.year() == first.year(),
+            is_today: d == today,
+            is_ramadan: h.map(|x| x.is_ramadan()).unwrap_or(false),
+        });
+    }
+    ui.set_calendar_days(ModelRc::new(VecModel::from(days)));
+    ui.set_calendar_month_label(first.format("%B %Y").to_string().into());
+    let mid_h = from_gregorian(first + chrono::Duration::days(14));
+    ui.set_calendar_month_label_ar(
+        mid_h
+            .map(|h| format!("{} {}", h.month_name_ar(), h.year))
+            .unwrap_or_default()
+            .into(),
+    );
+
+    // Engine bounds: the published table's first/last Gregorian days.
+    let bound_first = HijriDate::new(TABLE_FIRST_YEAR, 1, 1)
+        .and_then(|h| h.to_gregorian())
+        .unwrap_or_else(|| NaiveDate::from_ymd_opt(1924, 7, 31).unwrap());
+    let bound_last = HijriDate::new(TABLE_LAST_YEAR, 12, 1)
+        .map(|h| {
+            let len = i64::from(h.month_len());
+            h.to_gregorian()
+                .map(|g| g + chrono::Duration::days(len - 1))
+                .unwrap_or_else(|| NaiveDate::from_ymd_opt(2077, 12, 31).unwrap())
+        })
+        .unwrap_or_else(|| NaiveDate::from_ymd_opt(2077, 12, 31).unwrap());
+    let prev_enabled = first > bound_first.with_day(1).unwrap_or(bound_first);
+    let next_enabled = first < bound_last.with_day(1).unwrap_or(bound_last);
+    ui.set_calendar_prev_enabled(prev_enabled);
+    ui.set_calendar_next_enabled(next_enabled);
+    let note = if !next_enabled {
+        format!("Dates unavailable beyond {}", bound_last.format("%B %Y"))
+    } else if !prev_enabled {
+        format!("Dates unavailable before {}", bound_first.format("%B %Y"))
+    } else {
+        String::new()
+    };
+    ui.set_hijri_range_note(note.into());
+
+    // Selected day: five times, same honesty rules as the Today panel.
+    let sel = cal.selected.unwrap_or(today);
+    let times = prayer::compute(sel, location.coordinates, &state.settings.config);
+    let prov = provenance(sel, location.coordinates, &state.settings.config);
+    let strip: Vec<DayTime> = [
+        (Prayer::Fajr, prov.fajr),
+        (Prayer::Dhuhr, prov.dhuhr),
+        (Prayer::Asr, prov.asr),
+        (Prayer::Maghrib, prov.maghrib),
+        (Prayer::Isha, prov.isha),
+    ]
+    .iter()
+    .map(|(p, src)| {
+        let t = times.time(*p);
+        DayTime {
+            name: p.name_en().into(),
+            name_ar: p.name_ar().into(),
+            time: t
+                .map(|i| hhmm(location, i))
+                .unwrap_or_else(|| "\u{2014}".to_string())
+                .into(),
+            estimated: *src == TimeSource::Rule,
+            is_none: t.is_none(),
+        }
+    })
+    .collect();
+    ui.set_selected_day_times(ModelRc::new(VecModel::from(strip)));
+    ui.set_selected_day_label(format!("Times for this day · {}", sel.format("%a %d %b %Y")).into());
+
+    // Ramadan banner: offer during Ramadan when off; gentle end notice.
+    let cur_ramadan = from_gregorian(today)
+        .map(|h| h.is_ramadan())
+        .unwrap_or(false);
+    let banner = if cur_ramadan && !state.settings.ramadan_mode {
+        1
+    } else if state.settings.ramadan_mode && !cur_ramadan {
+        2
+    } else {
+        0
+    };
+    ui.set_ramadan_month(cur_ramadan);
+    ui.set_ramadan_banner(banner);
+    ui.set_ramadan_mode(state.settings.ramadan_mode);
+    ui.set_calendar_primary(
+        if state.settings.calendar_hijri_primary {
+            "hijri"
+        } else {
+            "greg"
+        }
+        .into(),
+    );
+}
+
 fn apply_settings(ui: &MainWindow, state: &AppState) {
     let settings = &state.settings;
     let location = state.location();
@@ -560,6 +1101,101 @@ fn apply_settings(ui: &MainWindow, state: &AppState) {
     ui.set_quiet_from(n.quiet_from.format("%H:%M").to_string().into());
     ui.set_quiet_to(n.quiet_to.format("%H:%M").to_string().into());
     ui.set_location_query(location.name.clone().into());
+    ui.set_settings_location_tz(state.settings.location.timezone.clone().into());
+    refresh_mosques_ui(ui, state);
+
+    // Phase 5 §5.1: rule rows with Quill's verified descriptions (verbatim).
+    ui.set_high_lat_rules(ModelRc::new(VecModel::from(vec![
+        RuleOption {
+            key: "middle_of_the_night".into(),
+            label: "Middle of the night".into(),
+            label_ar: "منتصف الليل".into(),
+            desc: "Sets Fajr half the night before sunrise and Isha half the night after sunset, when the sun never reaches the twilight angle.".into(),
+            desc_ar: "يقدّر الفجر قبل الشروق بنصف الليل، والعشاء بعد الغروب بنصف الليل، عندما لا تصل الشمس إلى زاوية الشفق.".into(),
+        },
+        RuleOption {
+            key: "seventh_of_the_night".into(),
+            label: "Seventh of the night".into(),
+            label_ar: "سُبع الليل".into(),
+            desc: "Sets Fajr one seventh of the night before sunrise and Isha one seventh of the night after sunset, when the sun never reaches the twilight angle.".into(),
+            desc_ar: "يقدّر الفجر قبل الشروق بسُبع الليل، والعشاء بعد الغروب بسُبع الليل، عندما لا تصل الشمس إلى زاوية الشفق.".into(),
+        },
+        RuleOption {
+            key: "twilight_angle".into(),
+            label: "Twilight angle".into(),
+            label_ar: "زاوية الشفق".into(),
+            desc: "Places Fajr and Isha at a fraction of the night set by the method's twilight angles, when the sun never reaches those angles.".into(),
+            desc_ar: "يضع الفجر والعشاء عند جزء من الليل تحدده زوايا الشفق للطريقة المختارة، عندما لا تصل الشمس إلى تلك الزوايا.".into(),
+        },
+    ])));
+    ui.set_selected_high_lat_rule(
+        match state.settings.config.high_latitude_rule {
+            HighLatitudeRule::MiddleOfTheNight => "middle_of_the_night",
+            HighLatitudeRule::SeventhOfTheNight => "seventh_of_the_night",
+            HighLatitudeRule::TwilightAngle => "twilight_angle",
+        }
+        .into(),
+    );
+
+    // Phase 5 §5.4: fine-tune steppers + the never-invisible adjustment summary.
+    let adj = &state.settings.config.adjustments;
+    ui.set_fine_tune(ModelRc::new(VecModel::from(vec![
+        adj.fajr as i32,
+        adj.dhuhr as i32,
+        adj.asr as i32,
+        adj.maghrib as i32,
+        adj.isha as i32,
+    ])));
+    let parts: Vec<String> = [
+        ("Fajr", adj.fajr),
+        ("Dhuhr", adj.dhuhr),
+        ("Asr", adj.asr),
+        ("Maghrib", adj.maghrib),
+        ("Isha", adj.isha),
+    ]
+    .iter()
+    .filter(|(_, v)| *v != 0)
+    .map(|(n, v)| format!("{n} {v:+} min"))
+    .collect();
+    ui.set_fine_tune_summary(parts.join(" · ").into());
+
+    // "How computed" expander: engine values only (Prism §5.4).
+    let method_label = match state.settings.config.method {
+        Method::MuslimWorldLeague => "Muslim World League",
+        Method::Egyptian => "Egyptian",
+        Method::Karachi => "Karachi",
+        Method::UmmAlQura => "Umm al-Qura",
+        Method::Dubai => "Dubai",
+        Method::MoonsightingCommittee => "Moonsighting Committee",
+        Method::NorthAmerica => "North America",
+        Method::Kuwait => "Kuwait",
+        Method::Qatar => "Qatar",
+        Method::Singapore => "Singapore",
+        Method::Tehran => "Tehran",
+        Method::Turkey => "Turkey",
+        Method::Custom { .. } => "Custom angles",
+    };
+    let rule_label = match state.settings.config.high_latitude_rule {
+        HighLatitudeRule::MiddleOfTheNight => "Middle of the night",
+        HighLatitudeRule::SeventhOfTheNight => "Seventh of the night",
+        HighLatitudeRule::TwilightAngle => "Twilight angle",
+    };
+    let rounding_label = match state.settings.config.rounding {
+        Rounding::Nearest => "nearest minute",
+        Rounding::Up => "up to the minute",
+        Rounding::None => "exact",
+    };
+    let mut summary = format!(
+        "Method: {method_label} · Madhab: {} · High-latitude rule: {rule_label} · Rounding: {rounding_label}",
+        match state.settings.config.madhab { Madhab::Shafi => "Shafi", Madhab::Hanafi => "Hanafi" }
+    );
+    if let Some(interval) = state.settings.config.isha_interval {
+        summary.push_str(&format!(" · Isha interval: {interval} min after Maghrib"));
+    }
+    if !parts.is_empty() {
+        summary.push_str(&format!(" · Adjustments: {}", parts.join(", ")));
+    }
+    ui.set_computed_summary(summary.into());
     ui.set_city_results(ModelRc::new(VecModel::from(Vec::<CityRow>::new())));
 
     let (left, right) = method_rows();
@@ -761,6 +1397,11 @@ fn apply_credits(ui: &MainWindow, state: &AppState) {
             name: "Hisn al-Muslim · Islamic-Pro-azkar-API".into(),
             license: "MIT".into(),
             role: "Athkar text corpus (pinned d793023e)".into(),
+        },
+        CreditRow {
+            name: "GeoNames Gazetteer · cities1000".into(),
+            license: "CC BY 4.0".into(),
+            role: "City database (derived; geonames.org, Unxos GmbH)".into(),
         },
         CreditRow {
             name: "ksni".into(),
@@ -1241,6 +1882,15 @@ fn announce(
             } else {
                 format!("{} in {} min", event.label, minutes)
             };
+            // Ramadan mode (Phase 5 §6.2): renamed copy ONLY — same
+            // pre-alert machinery, same event kinds, no new notifications.
+            let title = if settings.ramadan_mode && event.label == "Fajr" {
+                format!("Suhur reminder · {title}")
+            } else if settings.ramadan_mode && event.label == "Maghrib" {
+                format!("Iftar reminder · {title}")
+            } else {
+                title
+            };
             let prayer_time = location.local(prayer_at).format("%H:%M");
             (
                 title,
@@ -1304,11 +1954,15 @@ fn spawn_scheduler(
             // several events from hiding all but the one it was waiting on.
             let mut watermark = now();
             loop {
-                let (location, settings) = {
+                let (location, settings, mosques) = {
                     let guard = state.lock().unwrap();
-                    (guard.location(), guard.settings.clone())
+                    (
+                        guard.location(),
+                        guard.settings.clone(),
+                        guard.mosques.clone(),
+                    )
                 };
-                let (_, timeline) = day(&location, &settings);
+                let (_, timeline) = day(&location, &settings, &mosques);
                 let next = timeline.next_after(watermark).cloned();
 
                 let wait = next
@@ -1504,6 +2158,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    // F4 delta (Sentinel): legacy builds persisted unnamed drafts — prune
+    // them from memory AND storage at load, disarming a stale active
+    // pointer at a dropped row.
+    let (initial_mosques, active_mosque) = prune_unnamed_mosques(
+        storage.as_ref(),
+        storage
+            .as_ref()
+            .and_then(|s| s.load_mosques().ok())
+            .unwrap_or_default(),
+        settings.active_mosque.clone(),
+    );
+    settings.active_mosque = active_mosque;
     let state = Arc::new(Mutex::new(AppState {
         settings,
         storage,
@@ -1527,6 +2193,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             done: std::collections::HashMap::new(),
             dirty: true,
         }),
+        city_db: match city_db_path().and_then(|p| CityDb::open(&p).ok()) {
+            Some(db) => Some(db),
+            None => {
+                log::warn!("city database unavailable; picker falls back to manual coordinates");
+                None
+            }
+        },
+        picker: std::cell::RefCell::new(PickerUi {
+            pending_query: None,
+            results: Vec::new(),
+            highlight: -1,
+        }),
+        mosques: initial_mosques,
+        mosque_confirm: std::cell::RefCell::new(String::new()),
+        calendar: std::cell::RefCell::new(CalendarUi {
+            anchor: Utc::now().date_naive(),
+            selected: None,
+        }),
     }));
 
     let (wake_tx, wake_rx) = mpsc::channel::<()>();
@@ -1543,6 +2227,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // lifetime, dropped only when main returns after Quit.
     let _keepalive = tray::hold_event_loop()?;
     apply_theme(&ui, state.lock().unwrap().settings.theme);
+    ui.set_gps_available(cfg!(target_os = "windows"));
     apply_home(&ui, &state.lock().unwrap());
     apply_settings(&ui, &state.lock().unwrap());
     if let Some(message) = &warning {
@@ -1579,7 +2264,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let initial_target = {
         let guard = state.lock().unwrap();
         let location = guard.location();
-        let (times, _) = day(&location, &guard.settings);
+        let (times, _) = day(&location, &guard.settings, &guard.mosques);
         next_prayer(&times, &location, &guard.settings)
     };
     let initial_tooltip = match initial_target {
@@ -1757,6 +2442,645 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     drop(a);
                     apply_home(&ui, &s);
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_open_city_picker(move || {
+            if let Some(ui) = weak.upgrade() {
+                let s = state.lock().unwrap();
+                ui.set_recent_cities(recents_model(&s));
+                ui.set_city_query("".into());
+                ui.set_manual_error("".into());
+                run_picker_search(&ui, &s, "");
+                ui.set_page("city-picker".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_open_calendar(move || {
+            if let Some(ui) = weak.upgrade() {
+                let s = state.lock().unwrap();
+                let location = s.location();
+                let today = location.local(now()).date_naive();
+                {
+                    let mut cal = s.calendar.borrow_mut();
+                    cal.anchor = today;
+                    cal.selected = Some(today);
+                }
+                build_calendar(&ui, &s, &location);
+                ui.set_page("calendar".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_calendar_back(move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_page("home".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_calendar_nav(move |delta| {
+            if let Some(ui) = weak.upgrade() {
+                let s = state.lock().unwrap();
+                let location = s.location();
+                {
+                    let mut cal = s.calendar.borrow_mut();
+                    let months = chrono::Months::new(delta.unsigned_abs());
+                    cal.anchor = if delta < 0 {
+                        cal.anchor.checked_sub_months(months)
+                    } else {
+                        cal.anchor.checked_add_months(months)
+                    }
+                    .unwrap_or(cal.anchor);
+                }
+                build_calendar(&ui, &s, &location);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_calendar_today(move || {
+            if let Some(ui) = weak.upgrade() {
+                let s = state.lock().unwrap();
+                let location = s.location();
+                let today = location.local(now()).date_naive();
+                {
+                    let mut cal = s.calendar.borrow_mut();
+                    cal.anchor = today;
+                    cal.selected = Some(today);
+                }
+                build_calendar(&ui, &s, &location);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_set_calendar_primary(move |key| {
+            if let Some(ui) = weak.upgrade() {
+                let mut s = state.lock().unwrap();
+                s.settings.calendar_hijri_primary = key.as_str() == "hijri";
+                s.changed();
+                let location = s.location();
+                build_calendar(&ui, &s, &location);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_pick_day(move |iso| {
+            if let Some(ui) = weak.upgrade() {
+                let s = state.lock().unwrap();
+                if let Ok(d) = NaiveDate::parse_from_str(iso.as_str(), "%Y-%m-%d") {
+                    s.calendar.borrow_mut().selected = Some(d);
+                    let location = s.location();
+                    build_calendar(&ui, &s, &location);
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_set_ramadan_mode(move |on| {
+            if let Some(ui) = weak.upgrade() {
+                let mut s = state.lock().unwrap();
+                if on {
+                    // Opt-in only. Remember the theme; suggest Ramadan's.
+                    s.settings.pre_ramadan_theme = Some(s.settings.theme);
+                    s.settings.theme = tawadu_core::settings::Theme::Ramadan;
+                    s.settings.calendar_hijri_primary = true;
+                } else {
+                    // Restore the remembered theme — never a silent switch.
+                    s.settings.theme = s
+                        .settings
+                        .pre_ramadan_theme
+                        .take()
+                        .unwrap_or(tawadu_core::settings::Theme::Plaster);
+                }
+                s.settings.ramadan_mode = on;
+                s.changed();
+                apply_theme(&ui, s.settings.theme);
+                apply_home(&ui, &s);
+                apply_settings(&ui, &s);
+                let location = s.location();
+                build_calendar(&ui, &s, &location);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_set_high_lat(move |key| {
+            let mut s = state.lock().unwrap();
+            if let Some(rule) = decode::<HighLatitudeRule>(&key) {
+                s.settings.config.high_latitude_rule = rule;
+                s.changed();
+                if let Some(wake) = &s.wake {
+                    let _ = wake.send(());
+                }
+                if let Some(ui) = weak.upgrade() {
+                    apply_home(&ui, &s);
+                    apply_settings(&ui, &s);
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_set_fine_tune(move |prayer, value| {
+            let mut s = state.lock().unwrap();
+            let v = value.clamp(-30, 30) as i64;
+            let adj = &mut s.settings.config.adjustments;
+            match prayer.as_str() {
+                "fajr" => adj.fajr = v,
+                "dhuhr" => adj.dhuhr = v,
+                "asr" => adj.asr = v,
+                "maghrib" => adj.maghrib = v,
+                "isha" => adj.isha = v,
+                _ => return,
+            }
+            s.changed();
+            if let Some(wake) = &s.wake {
+                let _ = wake.send(());
+            }
+            if let Some(ui) = weak.upgrade() {
+                apply_home(&ui, &s);
+                apply_settings(&ui, &s);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_show_explain(move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_explain_visible(true);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_explain_change_rule(move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_page("settings".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_explain_why_rules(move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_page("settings".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_picker_back(move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_page("settings".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_search_cities(move |text| {
+            if weak.upgrade().is_some() {
+                let s = state.lock().unwrap();
+                s.picker.borrow_mut().pending_query = Some(text.to_string());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_pick_city(move |id| {
+            if let Some(ui) = weak.upgrade() {
+                let mut s = state.lock().unwrap();
+                let hit = id
+                    .parse::<u32>()
+                    .ok()
+                    .and_then(|gid| s.city_db.as_ref()?.by_id(gid).ok().flatten());
+                if let Some(hit) = hit {
+                    apply_location(&ui, &mut s, hit.location());
+                    ui.set_page("settings".into());
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_pick_recent(move |id| {
+            if let Some(ui) = weak.upgrade() {
+                let mut s = state.lock().unwrap();
+                let stored = id
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|i| s.settings.recent_cities.get(i).cloned());
+                if let Some(stored) = stored {
+                    apply_location(&ui, &mut s, stored.resolve());
+                    ui.set_page("settings".into());
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_nav_result(move |delta| {
+            if let Some(ui) = weak.upgrade() {
+                let s = state.lock().unwrap();
+                let mut p = s.picker.borrow_mut();
+                let len = p.results.len() as i32;
+                if len > 0 {
+                    p.highlight = (p.highlight + delta).rem_euclid(len);
+                    ui.set_highlighted_result(p.highlight);
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_use_gps(move || {
+            let Some(ui) = weak.upgrade() else {
+                return;
+            };
+            if ui.get_gps_busy() {
+                return;
+            }
+            ui.set_gps_busy(true);
+            ui.set_gps_confirm_visible(false);
+            // Privacy caption doubles as the busy line (existing Quill key).
+            ui.set_picker_message(
+                "Read once, stays on this device. Nothing leaves this device.".into(),
+            );
+            ui.set_picker_message_body("".into());
+            let weak2 = ui.as_weak();
+            std::thread::spawn(move || {
+                let fix = gps::read_fix();
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(ui) = weak2.upgrade() else {
+                        return;
+                    };
+                    ui.set_gps_busy(false);
+                    match fix {
+                        gps::GpsFix::Found { lat, lon } => {
+                            ui.set_gps_lat(format!("{lat:.4}").into());
+                            ui.set_gps_lon(format!("{lon:.4}").into());
+                            ui.set_gps_confirm_visible(true);
+                            ui.set_picker_message("".into());
+                        }
+                        gps::GpsFix::Denied => {
+                            ui.set_picker_message(
+                                "Location permission denied — enter coordinates manually.".into(),
+                            );
+                        }
+                        gps::GpsFix::Unavailable => {
+                            ui.set_picker_message(
+                                "Location is unavailable on this device — enter coordinates manually.".into(),
+                            );
+                        }
+                        gps::GpsFix::Timeout => {
+                            ui.set_picker_message(
+                                "Taking too long — enter coordinates manually.".into(),
+                            );
+                        }
+                    }
+                });
+            });
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_gps_confirm(move || {
+            if let Some(ui) = weak.upgrade() {
+                // CONFIRMED fix prefills the manual form; the timezone is
+                // still chosen EXPLICITLY (never guessed from longitude).
+                ui.set_manual_lat(ui.get_gps_lat());
+                ui.set_manual_lon(ui.get_gps_lon());
+                ui.set_coords_open(true);
+                ui.set_gps_confirm_visible(false);
+                ui.set_picker_message(
+                    "Coordinates filled in — choose a timezone, then apply.".into(),
+                );
+                ui.set_picker_message_body("".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_gps_cancel(move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_gps_confirm_visible(false);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_apply_coords(move |lat, lon, tz, name| {
+            if let Some(ui) = weak.upgrade() {
+                let mut s = state.lock().unwrap();
+                let lat = lat.trim().parse::<f64>();
+                let lon = lon.trim().parse::<f64>();
+                let (lat, lon) = match (lat, lon) {
+                    (Ok(a), Ok(b)) => (a, b),
+                    _ => {
+                        ui.set_manual_error(
+                            "Latitude must be between -90 and 90. Longitude must be between -180 and 180.".into(),
+                        );
+                        return;
+                    }
+                };
+                if let Err(which) = validate_coordinates(lat, lon) {
+                    ui.set_manual_error(
+                        if which == "latitude" {
+                            "Latitude must be between -90 and 90."
+                        } else {
+                            "Longitude must be between -180 and 180."
+                        }
+                        .into(),
+                    );
+                    return;
+                }
+                let zone: chrono_tz::Tz = match tz.trim().parse() {
+                    Ok(z) => z,
+                    Err(_) => {
+                        ui.set_manual_error("Choose a timezone.".into());
+                        return;
+                    }
+                };
+                let loc = tawadu_core::locations::Location::new(
+                    name.trim(),
+                    "",
+                    tawadu_core::prayer::Coordinates::new(lat, lon),
+                    zone,
+                );
+                ui.set_manual_error("".into());
+                apply_location(&ui, &mut s, loc);
+                ui.set_page("settings".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_search_tz(move |q| {
+            if let Some(ui) = weak.upgrade() {
+                let q = q.trim().to_lowercase();
+                let rows: Vec<OptionRow> = if q.is_empty() {
+                    Vec::new()
+                } else {
+                    timezone_list()
+                        .into_iter()
+                        .filter(|z| z.to_lowercase().contains(&q))
+                        .take(30)
+                        .map(|z| OptionRow {
+                            value: z.into(),
+                            label: z.into(),
+                        })
+                        .collect()
+                };
+                ui.set_tz_results(ModelRc::new(VecModel::from(rows)));
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_pick_tz(move |zone| {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_manual_tz(zone.clone());
+                ui.set_manual_tz_query("".into());
+                ui.set_tz_results(ModelRc::new(VecModel::from(Vec::<OptionRow>::new())));
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_add_mosque(move || {
+            if let Some(ui) = weak.upgrade() {
+                let mut s = state.lock().unwrap();
+                // F4 delta (Sentinel): the new draft replaces any previous
+                // UNNAMED draft — nothing is orphaned; named profiles are
+                // untouched (already persisted).
+                let current = ui.get_editing_mosque().to_string();
+                let id = begin_mosque_draft(&mut s, &current);
+                *s.mosque_confirm.borrow_mut() = String::new();
+                ui.set_editing_mosque(id.into());
+                ui.set_mosque_name_hint(false);
+                refresh_mosques_ui(&ui, &s);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_edit_mosque(move |id| {
+            if let Some(ui) = weak.upgrade() {
+                let mut s = state.lock().unwrap();
+                // F4: switching away from an unnamed draft discards it.
+                let current = ui.get_editing_mosque().to_string();
+                if !current.is_empty() && current != id.as_str() {
+                    discard_unnamed_mosque(&mut s, &current);
+                    s.changed();
+                }
+                ui.set_editing_mosque(id.clone());
+                ui.set_mosque_name_hint(false);
+                refresh_mosques_ui(&ui, &s);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_cancel_mosque_remove(move || {
+            if let Some(ui) = weak.upgrade() {
+                let s = state.lock().unwrap();
+                *s.mosque_confirm.borrow_mut() = String::new();
+                refresh_mosques_ui(&ui, &s);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_activate_mosque(move |id| {
+            if let Some(ui) = weak.upgrade() {
+                let mut s = state.lock().unwrap();
+                if s.mosques
+                    .iter()
+                    .any(|m| m.id == id.as_str() && m.is_named())
+                {
+                    s.settings.active_mosque = Some(id.to_string());
+                    s.changed();
+                    if let Some(wake) = &s.wake {
+                        let _ = wake.send(());
+                    }
+                    apply_home(&ui, &s);
+                    refresh_mosques_ui(&ui, &s);
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_set_mosque_name(move |id, name| {
+            if let Some(ui) = weak.upgrade() {
+                let mut guard = state.lock().unwrap();
+                // Plain &mut AppState: MutexGuard deref would defeat the
+                // field-disjoint borrows (mosques mut + storage imm).
+                let s = &mut *guard;
+                // F4 delta (Sentinel): the edit funnels through the single
+                // persistence gate — unnamed never persists.
+                let updated = set_mosque_name(s, id.as_str(), name.as_str());
+                if updated {
+                    s.changed();
+                    ui.set_mosque_name_hint(false);
+                    apply_home(&ui, s);
+                    refresh_mosques_ui(&ui, s);
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_set_mosque_name_ar(move |id, name| {
+            if let Some(ui) = weak.upgrade() {
+                let mut guard = state.lock().unwrap();
+                // Plain &mut AppState: MutexGuard deref would defeat the
+                // field-disjoint borrows (mosques mut + storage imm).
+                let s = &mut *guard;
+                // F4 delta (Sentinel): same gate as the EN name — an Arabic
+                // name alone must not persist an unnamed draft.
+                let updated = set_mosque_name_ar(s, id.as_str(), name.as_str());
+                if updated {
+                    s.changed();
+                    apply_home(&ui, s);
+                    refresh_mosques_ui(&ui, s);
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_set_mosque_offset(move |id, prayer, value| {
+            if let Some(ui) = weak.upgrade() {
+                let mut guard = state.lock().unwrap();
+                // Plain &mut AppState: MutexGuard deref would defeat the
+                // field-disjoint borrows (mosques mut + storage imm).
+                let s = &mut *guard;
+                // F4 delta (Sentinel): same gate — the stepper never
+                // persists an unnamed draft.
+                let updated = set_mosque_offset(s, id.as_str(), prayer.as_str(), value as i64);
+                if updated {
+                    s.changed();
+                    // The iqaamah times moved, so the day timeline did:
+                    // recompute now rather than at the end of the slice.
+                    if let Some(wake) = &s.wake {
+                        let _ = wake.send(());
+                    }
+                    apply_home(&ui, s);
+                    refresh_mosques_ui(&ui, s);
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_remove_mosque(move |id| {
+            if let Some(ui) = weak.upgrade() {
+                let mut s = state.lock().unwrap();
+                let confirming = s.mosque_confirm.borrow().clone();
+                if confirming != id.as_str() {
+                    // First click: arm the two-step confirm (Prism §4) with
+                    // the Quill remove copy — the consequence is VISIBLE at
+                    // confirm time (N4), never a silent reassignment.
+                    *s.mosque_confirm.borrow_mut() = id.to_string();
+                    let name = s
+                        .mosques
+                        .iter()
+                        .find(|m| m.id == id.as_str())
+                        .map(|m| m.name.clone())
+                        .unwrap_or_default();
+                    ui.set_mosque_remove_body(
+                        format!("\u{201C}{name}\u{201D} will be removed. The app will use no active mosque.").into(),
+                    );
+                    ui.set_mosque_remove_active(
+                        s.settings.active_mosque.as_deref() == Some(id.as_str()),
+                    );
+                    refresh_mosques_ui(&ui, &s);
+                    return;
+                }
+                // Second click: remove. Active profile -> NO active mosque
+                // (honest fallback, never a silent reassignment).
+                if let Some(storage) = &s.storage {
+                    let _ = storage.delete_mosque(id.as_str());
+                }
+                s.mosques.retain(|m| m.id != id.as_str());
+                if s.settings.active_mosque.as_deref() == Some(id.as_str()) {
+                    s.settings.active_mosque = None;
+                    s.status = "Mosque removed — no active mosque.".into();
+                }
+                *s.mosque_confirm.borrow_mut() = String::new();
+                if ui.get_editing_mosque().as_str() == id.as_str() {
+                    ui.set_editing_mosque("".into());
+                }
+                s.changed();
+                if let Some(wake) = &s.wake {
+                    let _ = wake.send(());
+                }
+                apply_home(&ui, &s);
+                apply_settings(&ui, &s);
+                refresh_mosques_ui(&ui, &s);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_done_editing(move || {
+            if let Some(ui) = weak.upgrade() {
+                let s = state.lock().unwrap();
+                let editing = ui.get_editing_mosque().to_string();
+                let unnamed = s
+                    .mosques
+                    .iter()
+                    .find(|m| m.id == editing)
+                    .map(|m| m.name.trim().is_empty())
+                    .unwrap_or(false);
+                if unnamed {
+                    // Name required (Prism §4): Done on an unnamed draft
+                    // DISCARDS it — nothing unnamed persists, no fabricated
+                    // "Mosque" name (F4). The hint flashes via the row.
+                    drop(s);
+                    let mut s = state.lock().unwrap();
+                    discard_unnamed_mosque(&mut s, &editing);
+                    s.changed();
+                    ui.set_editing_mosque("".into());
+                    ui.set_mosque_name_hint(false);
+                    refresh_mosques_ui(&ui, &s);
+                } else {
+                    ui.set_editing_mosque("".into());
+                    ui.set_mosque_name_hint(false);
                 }
             }
         });
@@ -2032,6 +3356,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // and the day rollover reloads progress without any interaction.
         apply_athkar(&ui, &guard, &location, &times);
     });
+
+    // City-picker search debounce (~150 ms, Prism §3): the expensive scan
+    // runs once per pause, never per keystroke.
+    let picker_timer = Timer::default();
+    {
+        let handle = ui.as_weak();
+        let picker_state = Arc::clone(&state);
+        picker_timer.start(TimerMode::Repeated, Duration::from_millis(150), move || {
+            let Some(ui) = handle.upgrade() else {
+                return;
+            };
+            let s = picker_state.lock().unwrap();
+            let pending = s.picker.borrow_mut().pending_query.take();
+            if let Some(q) = pending {
+                run_picker_search(&ui, &s, &q);
+            }
+        });
+    }
 
     // ---- notification switches ----
     {
@@ -2879,6 +4221,219 @@ mod tests {
 
     // ---- athkar tick refresh (Sentinel F1: idle boundary-cross + day rollover) ----
 
+    // ---- F4 (Sentinel): unnamed mosque drafts never persist ----
+
+    #[test]
+    fn add_then_dismiss_leaves_no_persisted_unnamed_profile() {
+        let mut s = athkar_fixture("2026-11-19", Context::Morning, false);
+        let id = add_mosque_draft(&mut s);
+        assert_eq!(s.mosques.len(), 1, "draft visible for editing");
+        assert!(
+            s.storage
+                .as_ref()
+                .unwrap()
+                .load_mosques()
+                .unwrap()
+                .is_empty(),
+            "unnamed draft must NOT be persisted"
+        );
+        discard_unnamed_mosque(&mut s, &id);
+        assert!(s.mosques.is_empty(), "dismiss discards the draft");
+        assert!(s
+            .storage
+            .as_ref()
+            .unwrap()
+            .load_mosques()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn named_profile_persists_and_survives_dismiss() {
+        let mut s = athkar_fixture("2026-11-19", Context::Morning, false);
+        let id = add_mosque_draft(&mut s);
+        if let Some(m) = s.mosques.iter_mut().find(|m| m.id == id) {
+            m.name = "Al-Noor".into();
+            if let Some(storage) = &s.storage {
+                storage.save_mosque(m).unwrap();
+            }
+        }
+        discard_unnamed_mosque(&mut s, &id);
+        assert_eq!(s.mosques.len(), 1, "named profile stays");
+        assert_eq!(s.storage.as_ref().unwrap().load_mosques().unwrap().len(), 1);
+    }
+
+    // ---- F4 delta (Sentinel): every mosque edit path is gated ----
+
+    #[test]
+    fn offset_edit_on_unnamed_draft_never_persists() {
+        // Sentinel F4 delta: the offset stepper must not persist an
+        // unnamed draft, and the edit stays live in memory.
+        let mut s = athkar_fixture("2026-11-19", Context::Morning, false);
+        let id = add_mosque_draft(&mut s);
+        assert!(set_mosque_offset(&mut s, &id, "fajr", 15), "edit applies");
+        assert!(
+            s.mosques.iter().any(|m| m.id == id && m.offsets.fajr == 15),
+            "the edit is live in memory"
+        );
+        assert!(
+            s.storage
+                .as_ref()
+                .unwrap()
+                .load_mosques()
+                .unwrap()
+                .is_empty(),
+            "an unnamed draft must NOT reach storage via the offset stepper"
+        );
+    }
+
+    #[test]
+    fn ar_name_edit_on_unnamed_draft_never_persists() {
+        // Sentinel F4 delta: an Arabic name alone does not name a
+        // profile (activation keys on the EN name), so it must not
+        // persist either.
+        let mut s = athkar_fixture("2026-11-19", Context::Morning, false);
+        let id = add_mosque_draft(&mut s);
+        assert!(
+            set_mosque_name_ar(&mut s, &id, "مسجد النور"),
+            "edit applies"
+        );
+        assert!(
+            s.mosques
+                .iter()
+                .any(|m| m.id == id && m.name_ar == "مسجد النور"),
+            "the edit is live in memory"
+        );
+        assert!(
+            s.storage
+                .as_ref()
+                .unwrap()
+                .load_mosques()
+                .unwrap()
+                .is_empty(),
+            "an unnamed draft must NOT reach storage via the Arabic name"
+        );
+    }
+
+    #[test]
+    fn named_profile_survives_ar_and_offset_edits() {
+        // Positive control: the gate must not over-block a real profile —
+        // every edit path persists once the EN name is set.
+        let mut s = athkar_fixture("2026-11-19", Context::Morning, false);
+        let id = add_mosque_draft(&mut s);
+        assert!(set_mosque_name(&mut s, &id, "Al-Noor"));
+        assert!(set_mosque_name_ar(&mut s, &id, "مسجد النور"));
+        assert!(set_mosque_offset(&mut s, &id, "fajr", 15));
+        let rows = s.storage.as_ref().unwrap().load_mosques().unwrap();
+        assert_eq!(rows.len(), 1, "named profile persists");
+        assert_eq!(rows[0].name, "Al-Noor");
+        assert_eq!(rows[0].name_ar, "مسجد النور");
+        assert_eq!(rows[0].offsets.fajr, 15);
+    }
+
+    #[test]
+    fn emptying_the_name_removes_the_row_again() {
+        // Sentinel invariant: unnamed never STAYS persisted — a profile
+        // whose name is emptied after being saved is deleted, not saved.
+        let mut s = athkar_fixture("2026-11-19", Context::Morning, false);
+        let id = add_mosque_draft(&mut s);
+        assert!(set_mosque_name(&mut s, &id, "Al-Noor"));
+        assert_eq!(s.storage.as_ref().unwrap().load_mosques().unwrap().len(), 1);
+        assert!(set_mosque_name(&mut s, &id, ""));
+        assert!(
+            s.storage
+                .as_ref()
+                .unwrap()
+                .load_mosques()
+                .unwrap()
+                .is_empty(),
+            "emptying the name deletes the persisted row"
+        );
+    }
+
+    #[test]
+    fn legacy_unnamed_rows_are_pruned_from_storage_on_load() {
+        // Sentinel F4 delta, defense in depth: a row an older build's
+        // unconditional save persisted unnamed is dropped from memory AND
+        // storage at load, and an active pointer at it is disarmed.
+        let storage = Storage::open_in_memory().unwrap();
+        let legacy = tawadu_core::mosques::MosqueProfile::new("legacy-unnamed".into());
+        storage.save_mosque(&legacy).unwrap();
+        let mut named = tawadu_core::mosques::MosqueProfile::new("m1".into());
+        named.name = "Al-Noor".into();
+        storage.save_mosque(&named).unwrap();
+        assert_eq!(
+            storage.load_mosques().unwrap().len(),
+            2,
+            "fixture: both rows persisted"
+        );
+
+        let (keep, active) = prune_unnamed_mosques(
+            Some(&storage),
+            storage.load_mosques().unwrap(),
+            Some("legacy-unnamed".into()),
+        );
+        assert_eq!(keep.len(), 1, "named rows survive the prune");
+        assert_eq!(keep[0].id, "m1");
+        assert!(
+            storage.load_mosques().unwrap().iter().all(|m| m.id == "m1"),
+            "the unnamed row is deleted from storage"
+        );
+        assert!(active.is_none(), "active at a dropped row is disarmed");
+
+        // Active at the NAMED row survives the prune.
+        let (_, active2) = prune_unnamed_mosques(
+            Some(&storage),
+            storage.load_mosques().unwrap(),
+            Some("m1".into()),
+        );
+        assert_eq!(active2.as_deref(), Some("m1"));
+    }
+
+    #[test]
+    fn add_discards_the_previous_unnamed_draft() {
+        // Sentinel F4 delta: Add never orphans an in-flight unnamed draft.
+        // The old draft carries an AR-name marker, so the survivor being
+        // FRESH proves discard+re-add even if both drafts land on the same
+        // millisecond id (ids are timestamp-based).
+        let mut s = athkar_fixture("2026-11-19", Context::Morning, false);
+        let a = begin_mosque_draft(&mut s, "");
+        assert!(s.mosques.iter().any(|m| m.id == a), "first draft is live");
+        set_mosque_name_ar(&mut s, &a, "مسجد تجريبي");
+        let b = begin_mosque_draft(&mut s, &a);
+        assert_eq!(s.mosques.len(), 1, "exactly one draft survives");
+        assert_eq!(s.mosques[0].id, b, "the survivor is the new draft");
+        assert!(
+            s.mosques[0].name_ar.is_empty(),
+            "the survivor is FRESH — the marked old draft was discarded"
+        );
+        assert!(s
+            .storage
+            .as_ref()
+            .unwrap()
+            .load_mosques()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn add_keeps_a_named_profile_and_starts_a_new_draft() {
+        // The draft discard must not touch a persisted named profile.
+        let mut s = athkar_fixture("2026-11-19", Context::Morning, false);
+        let a = begin_mosque_draft(&mut s, "");
+        set_mosque_name(&mut s, &a, "Al-Noor");
+        let b = begin_mosque_draft(&mut s, &a);
+        assert!(
+            s.mosques.iter().any(|m| m.name == "Al-Noor"),
+            "named profile untouched"
+        );
+        assert!(
+            s.mosques.iter().any(|m| m.id == b && !m.is_named()),
+            "a fresh unnamed draft is live"
+        );
+        assert_eq!(s.storage.as_ref().unwrap().load_mosques().unwrap().len(), 1);
+    }
+
     /// An AppState with the real bundled corpus + an in-memory store, parked
     /// at a known context/day — the wiring-level fixture for the tick refresh.
     fn athkar_fixture(day: &str, ctx: Context, manual: bool) -> AppState {
@@ -2891,6 +4446,18 @@ mod tests {
             library: None,
             engine: None,
             corpus: Some(Corpus::bundled().unwrap()),
+            city_db: None,
+            picker: std::cell::RefCell::new(PickerUi {
+                pending_query: None,
+                results: Vec::new(),
+                highlight: -1,
+            }),
+            mosques: Vec::new(),
+            mosque_confirm: std::cell::RefCell::new(String::new()),
+            calendar: std::cell::RefCell::new(CalendarUi {
+                anchor: Utc::now().date_naive(),
+                selected: None,
+            }),
             athkar: std::cell::RefCell::new(AthkarUi {
                 ctx,
                 loaded_ctx: Some(ctx),

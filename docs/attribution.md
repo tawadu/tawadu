@@ -11,6 +11,7 @@ Tawadu's code is MIT. Everything bundled besides the code keeps its own licence.
 | Wikimedia Commons | Adhan recordings (Makkah, Madinah, Malmö, …) | CC0 / CC BY 3.0 / CC BY-SA 4.0 | Usable with attribution |
 | `YousefAsalya/Islamic-Pro-azkar-API` | Hisn al-Muslim TEXT: 132 categories / 267 items, AR/EN (pinned `d793023e`; per-file SHA-256 + `scripts/verify_athkar_corpus.py`; ledger `docs/athkar-corpus.md`) | MIT (`assets/licenses/azkar-api-mit.txt`) | **Bundled (Phase 4, text only)** — recitation MP3s NOT bundled (third-party performance rights, separate check) |
 | OpenDua dataset (Human Development Fund) | Adhkar text | CC BY 4.0 | Usable with attribution |
+| GeoNames `cities1000.zip` | Derived city DB: 172,038 cities, AR/EN search aliases, IANA timezones (pinned raw SHA `1dcfe6ea…`, derived SHA `640f86c4…`; `scripts/build_city_db.py`; ledger `docs/phase5-city-sources.md`) | CC BY 4.0 (`assets/licenses/geonames-cities1000-cc-by-4.0.txt`) | **Bundled (Phase 5, derived SQLite only — raw zip never in repo)** |
 | `Kiwifu/adhan-mp3` | 224 adhan MP3s | **no LICENSE file** | **Do not bundle** until licensed |
 | `assabile.com` | Adhan / athkar downloads | free downloads, no redistribution grant | Verify before bundling |
 | `mohammed-2-5/islamic-library-data` | data + 4 adhan | **no LICENSE** | Avoid |

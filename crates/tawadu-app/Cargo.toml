@@ -34,7 +34,13 @@ windows = { version = "0.62", features = [
     "Win32_UI_Shell",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
+    # Phase 5 slice 6: opt-in device location (read once, never leaves the
+    # device). RequestAccessAsync + GetGeopositionAsync.
+    "Devices_Geolocation",
+    "Foundation",
 ] }
+# WinRT async plumbing for the geolocation read (same version windows uses).
+windows-future = "0.3" 
 
 # Linux: probe for a StatusNotifier watcher before creating the tray (ADR 0002
 # condition 4 — ksni's spawn assumes a watcher, so we check ourselves).

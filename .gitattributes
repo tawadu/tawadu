@@ -5,3 +5,7 @@
 # checkouts stay byte-identical to the committed LF blobs (pinned d793023e).
 assets/athkar/*.json -text
 assets/licenses/*.txt -text
+
+# Derived city DB is a binary artifact — byte-exact on every platform
+# (provenance hash in assets/licenses/geonames-cities1000-cc-by-4.0.txt).
+assets/cities.db -text -diff
