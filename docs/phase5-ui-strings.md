@@ -18,6 +18,15 @@
 > Status: **ACCEPTED by Atlas 2026-11-20 01:2x AST** (112 keys verified; F1 one-word
 > Arabic fix applied by Atlas — variance `[one]` دقيقة واحدة; §12 native flags carried).
 >
+> **N7 adjudication: 2026-11-20 (user decision, subagent panel 2-1 → escalated).**
+> Ramadan mode now **suggests then confirms** (Prism §6.2): the banner and the
+> APPEARANCE toggle only raise a confirm card, and the three effects apply
+> together on confirm. `phase5-ramadan-mode-desc` is rendered for the first time
+> (confirm card + APPEARANCE row while active). The APPEARANCE row shows only
+> while the mode is on or the calendar is in Ramadan, and the **calendar header
+> keeps a manual enable action** so opting in never depends on the Hijri banner.
+> 3 keys added (126 → **129**); `phase5-ramadan-restore-theme` superseded.
+>
 > **N6 catalog pass: 2026-11-20** — 14 keys added (deviation-4 / F1 / F2 per-event
 > strip sentences, notification prefixes, timezone-picker placeholder, status and
 > bound lines) and the two polar explain bodies re-pointed at the composed
@@ -234,11 +243,14 @@ only when the sun never reaches the twilight angle.
 | `phase5-cal-error-body` | The Hijri table does not cover this range. The Gregorian calendar still works. | جدول التاريخ الهجري لا يغطي هذا النطاق. التقويم الميلادي ما زال يعمل. | |
 | `phase5-ramadan-banner-title` | Ramadan | رمضان | shown only in the Hijri month of Ramadan |
 | `phase5-ramadan-mode` | Ramadan mode | وضع رمضان | |
-| `phase5-ramadan-mode-desc` | Suggests the Ramadan theme, turns the Fajr pre-alert into a suhur reminder and the Maghrib pre-alert into an iftar reminder, and marks Ramadan days in the calendar. Nothing else changes. | يقترح سمة رمضان، ويحوّل تنبيه الفجر إلى تذكير بالسحور وتنبيه المغرب إلى تذكير بالإفطار، ويميّز أيام رمضان في التقويم. لا يتغيّر شيء آخر. | scope = theme + cadence + markers only |
-| `phase5-ramadan-turn-on` | Turn on Ramadan mode | تفعيل وضع رمضان | opt-in, never auto-applied |
-| `phase5-ramadan-turn-off` | Turn off Ramadan mode | إيقاف وضع رمضان | |
+| `phase5-ramadan-mode-desc` | Suggests the Ramadan theme, turns the Fajr pre-alert into a suhur reminder and the Maghrib pre-alert into an iftar reminder, and marks Ramadan days in the calendar. Nothing else changes. | يقترح سمة رمضان، ويحوّل تنبيه الفجر إلى تذكير بالسحور وتنبيه المغرب إلى تذكير بالإفطار، ويميّز أيام رمضان في التقويم. لا يتغيّر شيء آخر. | scope = theme + cadence + markers only. **N7: now rendered** — turn-on confirm card + APPEARANCE row while active (was dead copy) |
+| `phase5-ramadan-turn-on` | Turn on Ramadan mode | تفعيل وضع رمضان | **N7:** the confirm card's action (request → confirm → apply); opt-in, never auto-applied |
+| `phase5-ramadan-turn-off` | Turn off Ramadan mode | إيقاف وضع رمضان | **N7:** the turn-off confirm card's action |
 | `phase5-ramadan-ended` | Ramadan has ended — turn off mode? | انتهى شهر رمضان — أتريد إيقاف الوضع؟ | a question, never a silent switch |
-| `phase5-ramadan-restore-theme` | Restore the previous theme? | أأستعيد السمة السابقة؟ | offered when mode turns off |
+| `phase5-ramadan-restore-theme` | Restore the previous theme? | أأستعيد السمة السابقة؟ | **superseded by `phase5-ramadan-confirm-off-body` (N7)** |
+| `phase5-ramadan-confirm-on-title` | Turn on Ramadan mode? | أتريد تفعيل وضع رمضان؟ | **N7 new:** confirm-card title; the change is suggested here and applied only on confirm (Prism §6.2) |
+| `phase5-ramadan-confirm-off-title` | Turn off Ramadan mode? | أتريد إيقاف وضع رمضان؟ | **N7 new:** turn-off confirm-card title |
+| `phase5-ramadan-confirm-off-body` | Restore the previous theme? The suhur and iftar reminder names and the calendar marks stop. | أأستعيد السمة السابقة؟ تتوقف أسماء تنبيهي السحور والإفطار وعلامات التقويم. | **N7 new:** turn-off confirm body |
 
 ### 4.5 Shared actions & error states
 
@@ -409,13 +421,14 @@ changes — the label stays.
 | 4.1 City search & selection | 33 |
 | 4.2 Mosque profiles | 24 |
 | 4.3 High-latitude honesty | 31 |
-| 4.4 Calendar & Ramadan mode | 30 |
+| 4.4 Calendar & Ramadan mode | 32 |
 | 4.5 Shared actions & errors | 6 |
 | 4.6 Notification titles | 2 |
-| **Total** | **126** |
+| **Total** | **129** |
 
-126 catalogue keys = 126 English strings + 126 Arabic strings (three of which are
-Fluent plural blocks). The N6 pass added 14 keys on 2026-11-20 (112 → 126).
+129 catalogue keys = 129 English strings + 129 Arabic strings (three of which are
+Fluent plural blocks). The N6 pass added 14 keys on 2026-11-20 (112 → 126); the
+N7 adjudication added 3 (126 → 129).
 
 **AR-run coverage (N6).** 18 of the 111 pre-N6 catalog values are rendered in
 Arabic in the shipped app — the EN-primary-until-Phase-6 convention. Prism §5.2

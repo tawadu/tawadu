@@ -303,6 +303,17 @@ countdowns, special athkar sets (Phase 4 owns athkar). Mode state persists in
 Settings; it ends when the user turns it off (or Ramadan ends → a gentle
 *"Ramadan has ended — turn off mode?"* notice, never a silent switch).
 
+**N7 adjudication (2026-11-20, user decision).** The shipped build applied the
+theme on the banner click; the contract above says *suggests* + *user confirms*.
+Resolved in favour of the contract: the banner and the APPEARANCE toggle now
+raise a confirm card (title + `phase5-ramadan-mode-desc`) and the three effects
+apply together only on confirm; the turn-off path confirms too, offering the
+theme restore. The APPEARANCE row is shown only while the mode is on or the
+calendar is in Ramadan (§2/§6.3), and the **calendar header keeps a manual
+"Turn on Ramadan mode" action** so opting in never depends on the Hijri banner
+appearing (the risk both review directions flagged). `phase5-ramadan-mode-desc`
+is rendered for the first time. Catalog: 3 keys added (126 → 129).
+
 ### 6.3 States
 
 Empty/error: engine date failure → *"Dates unavailable — check the Hijri table

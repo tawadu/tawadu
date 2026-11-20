@@ -156,6 +156,9 @@ struct AppState {
     mosques: Vec<tawadu_core::mosques::MosqueProfile>,
     /// Two-step remove confirm: the id awaiting confirmation ("" = none).
     mosque_confirm: std::cell::RefCell<String>,
+    /// N7: 0 = no confirm card, 1 = turn-on confirm, 2 = turn-off confirm.
+    /// The mode is applied only after the user confirms (Prism §6.2).
+    ramadan_confirm: std::cell::RefCell<u8>,
     /// Calendar view state (Phase 5): the viewed month + selected day.
     calendar: std::cell::RefCell<CalendarUi>,
 }
@@ -1102,6 +1105,7 @@ fn build_calendar(ui: &MainWindow, state: &AppState, location: &tawadu_core::loc
     ui.set_ramadan_month(cur_ramadan);
     ui.set_ramadan_banner(banner);
     ui.set_ramadan_mode(state.settings.ramadan_mode);
+    ui.set_ramadan_confirm(*state.ramadan_confirm.borrow() as i32);
     ui.set_calendar_primary(
         if state.settings.calendar_hijri_primary {
             "hijri"
@@ -2236,6 +2240,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
         mosques: initial_mosques,
         mosque_confirm: std::cell::RefCell::new(String::new()),
+        ramadan_confirm: std::cell::RefCell::new(0),
         calendar: std::cell::RefCell::new(CalendarUi {
             anchor: Utc::now().date_naive(),
             selected: None,
@@ -2586,6 +2591,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.on_set_ramadan_mode(move |on| {
             if let Some(ui) = weak.upgrade() {
                 let mut s = state.lock().unwrap();
+                // N7: reached only from the confirm card — clear it, then
+                // apply all three effects together.
+                *s.ramadan_confirm.borrow_mut() = 0;
+                ui.set_ramadan_confirm(0);
                 if on {
                     // Opt-in only. Remember the theme; suggest Ramadan's.
                     s.settings.pre_ramadan_theme = Some(s.settings.theme);
@@ -2606,6 +2615,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 apply_settings(&ui, &s);
                 let location = s.location();
                 build_calendar(&ui, &s, &location);
+            }
+        });
+    }
+    {
+        // N7: the banner/toggle only REQUEST the change; the card confirms it.
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_request_ramadan_mode(move |on| {
+            if let Some(ui) = weak.upgrade() {
+                let s = state.lock().unwrap();
+                *s.ramadan_confirm.borrow_mut() = if on { 1 } else { 2 };
+                ui.set_ramadan_confirm(if on { 1 } else { 2 });
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_cancel_ramadan_confirm(move || {
+            if let Some(ui) = weak.upgrade() {
+                let s = state.lock().unwrap();
+                *s.ramadan_confirm.borrow_mut() = 0;
+                ui.set_ramadan_confirm(0);
             }
         });
     }
@@ -4492,6 +4524,7 @@ mod tests {
             }),
             mosques: Vec::new(),
             mosque_confirm: std::cell::RefCell::new(String::new()),
+            ramadan_confirm: std::cell::RefCell::new(0),
             calendar: std::cell::RefCell::new(CalendarUi {
                 anchor: Utc::now().date_naive(),
                 selected: None,
