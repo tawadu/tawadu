@@ -115,6 +115,23 @@ impl CityDb {
                 }
             }
         }
+        // Substring fallback (Prism §3: prefix + substring) only when the
+        // prefix pass is sparse — a LIKE scan is the expensive path, so it
+        // stays off the common keystroke.
+        if !q.is_empty() && ids.len() < 10 {
+            let like = format!("%{q}%");
+            for sql in [
+                "SELECT geonameid FROM cities WHERE name_norm LIKE ?1 LIMIT 400",
+                "SELECT geonameid FROM cities WHERE ascii_norm LIKE ?1 LIMIT 400",
+                "SELECT geonameid FROM aliases WHERE alias_norm LIKE ?1 LIMIT 400",
+            ] {
+                let mut stmt = self.conn.prepare(sql)?;
+                let rows = stmt.query_map(params![like], |r| r.get::<_, u32>(0))?;
+                for row in rows {
+                    ids.push(row?);
+                }
+            }
+        }
         ids.sort_unstable();
         ids.dedup();
         let mut hits = Vec::new();
@@ -298,6 +315,21 @@ mod tests {
         // Latin search still finds it.
         let hits = db().search("Sultanah", 10).unwrap();
         assert!(hits.iter().any(|h| h.geonameid == 101760));
+    }
+
+    #[test]
+    fn substring_fallback_when_prefix_is_sparse() {
+        // Prism §3: prefix + substring. "iyadh" is inside "Riyadh" but is
+        // a prefix of nothing — the fallback must surface it. (Common
+        // substrings like "adh" legitimately rank bigger cities first.)
+        let hits = db().search("iyadh", 20).unwrap();
+        assert!(
+            hits.iter().any(|h| h.geonameid == 108410),
+            "Riyadh via substring"
+        );
+        // Arabic substring: ياض inside الرياض.
+        let hits = db().search("ياض", 20).unwrap();
+        assert!(hits.iter().any(|h| h.geonameid == 108410));
     }
 
     #[test]

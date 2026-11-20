@@ -288,6 +288,40 @@ pub const CITIES: &[City] = &[
     },
 ];
 
+/// Phase 5: most-recent-first recents, deduped by (name, coordinates),
+/// capped at 5 (Prism §3). Pure — persistence rides the settings blob.
+pub fn push_recent(
+    recents: &mut Vec<crate::settings::StoredLocation>,
+    entry: crate::settings::StoredLocation,
+) {
+    recents.retain(|r| {
+        !(r.name == entry.name && r.latitude == entry.latitude && r.longitude == entry.longitude)
+    });
+    recents.insert(0, entry);
+    recents.truncate(5);
+}
+
+/// Manual-coordinate validation (Prism §3: decimal degrees, explicit bounds,
+/// never guess a timezone from longitude). Pure.
+pub fn validate_coordinates(latitude: f64, longitude: f64) -> Result<(), &'static str> {
+    if !latitude.is_finite() || !(-90.0..=90.0).contains(&latitude) {
+        return Err("latitude");
+    }
+    if !longitude.is_finite() || !(-180.0..=180.0).contains(&longitude) {
+        return Err("longitude");
+    }
+    Ok(())
+}
+
+/// The bundled IANA timezone set for the explicit manual-entry picker
+/// (chrono-tz's compiled tzdb — offline, sorted). Coordinates alone cannot
+/// honestly imply a zone; the user picks from this list.
+pub fn timezone_list() -> Vec<&'static str> {
+    let mut zones: Vec<&'static str> = chrono_tz::TZ_VARIANTS.iter().map(|tz| tz.name()).collect();
+    zones.sort_unstable();
+    zones
+}
+
 /// Case-insensitive lookup by English or Arabic name (exact, then prefix).
 pub fn find_city(query: &str) -> Option<Location> {
     let q = query.trim();
@@ -350,5 +384,58 @@ mod tests {
             country: "ZZ",
         };
         assert_eq!(city.location().timezone_name(), "UTC");
+    }
+
+    // ---- Phase 5 slice 2: recents, manual coordinates, timezone list ----
+
+    fn stored(name: &str, lat: f64, lon: f64) -> crate::settings::StoredLocation {
+        crate::settings::StoredLocation {
+            name: name.into(),
+            name_ar: String::new(),
+            latitude: lat,
+            longitude: lon,
+            timezone: "Asia/Riyadh".into(),
+        }
+    }
+
+    #[test]
+    fn push_recent_is_most_recent_first_deduped_and_capped() {
+        let mut recents: Vec<crate::settings::StoredLocation> = Vec::new();
+        for i in 0..7 {
+            push_recent(&mut recents, stored(&format!("City{i}"), i as f64, 0.0));
+        }
+        assert_eq!(recents.len(), 5, "cap at 5");
+        assert_eq!(recents[0].name, "City6");
+        // Re-picking an old city moves it to the front, no duplicate.
+        push_recent(&mut recents, stored("City3", 3.0, 0.0));
+        assert_eq!(recents[0].name, "City3");
+        assert_eq!(recents.iter().filter(|r| r.name == "City3").count(), 1);
+        assert_eq!(recents.len(), 5);
+    }
+
+    #[test]
+    fn coordinate_validation_bounds_and_nan() {
+        assert!(validate_coordinates(0.0, 0.0).is_ok());
+        assert!(validate_coordinates(90.0, 180.0).is_ok());
+        assert!(validate_coordinates(-90.0, -180.0).is_ok());
+        assert!(validate_coordinates(90.1, 0.0).is_err());
+        assert!(validate_coordinates(-90.1, 0.0).is_err());
+        assert!(validate_coordinates(0.0, 180.1).is_err());
+        assert!(validate_coordinates(0.0, -180.1).is_err());
+        assert!(validate_coordinates(f64::NAN, 0.0).is_err());
+        assert!(validate_coordinates(0.0, f64::INFINITY).is_err());
+    }
+
+    #[test]
+    fn timezone_list_is_the_bundled_iana_set() {
+        let zones = timezone_list();
+        assert!(zones.len() > 400, "chrono-tz carries the full IANA set");
+        assert!(zones.contains(&"Asia/Riyadh"));
+        assert!(zones.contains(&"Europe/Oslo"));
+        assert!(zones.contains(&"Pacific/Auckland"));
+        assert!(
+            zones.windows(2).all(|w| w[0] <= w[1]),
+            "sorted for the picker"
+        );
     }
 }

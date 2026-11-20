@@ -155,6 +155,11 @@ pub struct Settings {
     /// still loads: no packs chosen, no trim, fixed shuffle seed.
     #[serde(default)]
     pub audio: AudioSettings,
+    /// Phase 5: most-recent-first picked places (<= 5, deduped).
+    /// `serde(default)` so pre-Phase-5 blobs upgrade with empty recents and
+    /// the CHOSEN LOCATION PRESERVED — never a wholesale defaults fallback.
+    #[serde(default)]
+    pub recent_cities: Vec<StoredLocation>,
 }
 
 impl Default for Settings {
@@ -178,6 +183,7 @@ impl Default for Settings {
             athan_volume: 0.8,
             notifications: NotificationSettings::default(),
             audio: AudioSettings::default(),
+            recent_cities: Vec::new(),
         }
     }
 }
@@ -185,6 +191,17 @@ impl Default for Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pre_phase5_blob_upgrades_with_location_preserved_and_empty_recents() {
+        let mut blob = serde_json::to_value(Settings::default()).unwrap();
+        let obj = blob.as_object_mut().unwrap();
+        obj.remove("recent_cities");
+        obj["location"]["name"] = serde_json::json!("Oslo");
+        let upgraded: Settings = serde_json::from_value(blob).unwrap();
+        assert_eq!(upgraded.location.name, "Oslo", "chosen city preserved");
+        assert!(upgraded.recent_cities.is_empty());
+    }
 
     #[test]
     fn pre_autostart_blob_upgrades_with_autostart_off() {
