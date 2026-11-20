@@ -25,7 +25,10 @@ use tawadu_core::locations::{find_city, Location, CITIES};
 use tawadu_core::locations::{push_recent, timezone_list, validate_coordinates};
 use tawadu_core::mosques::effective_iqamah;
 use tawadu_core::notify::{self, NotificationKind};
-use tawadu_core::prayer::{self, HighLatitudeRule, Madhab, Method, Prayer, PrayerTimes, Rounding};
+use tawadu_core::prayer::{
+    self, provenance, HighLatitudeRule, Madhab, Method, PolarState, Prayer, PrayerTimes, Rounding,
+    TimeSource,
+};
 use tawadu_core::scheduler::{self, EventKind, Timeline};
 use tawadu_core::settings::{AudioSettings, EventVoice, Language, PlaybackMode, Settings, Theme};
 use tawadu_core::storage::{LoadOutcome, Storage};
@@ -382,9 +385,9 @@ fn apply_home(ui: &MainWindow, state: &AppState) {
             ui.set_countdown(countdown(at).into());
         }
         None => {
-            ui.set_next_name("—".into());
-            ui.set_next_name_ar("—".into());
-            ui.set_countdown("--:--:--".into());
+            ui.set_next_name("\u{2014}".into());
+            ui.set_next_name_ar("\u{2014}".into());
+            ui.set_countdown("\u{2014}".into());
         }
     }
 
@@ -433,32 +436,118 @@ fn apply_home(ui: &MainWindow, state: &AppState) {
         Prayer::Isha,
     ];
     let next_name = next.map(|(prayer, _)| prayer);
+    // Phase 5: per-event provenance — estimated / undefined markers and the
+    // explanation strip come from the ENGINE, never UI-invented facts.
+    let prov = provenance(
+        location.local(now).date_naive(),
+        location.coordinates,
+        &state.settings.config,
+    );
+    let source_of = |prayer: Prayer| match prayer {
+        Prayer::Fajr => prov.fajr,
+        Prayer::Sunrise => prov.sunrise,
+        Prayer::Dhuhr => prov.dhuhr,
+        Prayer::Asr => prov.asr,
+        Prayer::Maghrib => prov.maghrib,
+        Prayer::Isha => prov.isha,
+        Prayer::Qiyam => TimeSource::Sun,
+    };
     let rows: Vec<Row> = order
         .into_iter()
         .map(|prayer| {
-            let time = times
-                .time(prayer)
-                .map(|instant| hhmm(&location, instant))
-                .unwrap_or_else(|| "--:--".to_string());
+            let instant = times.time(prayer);
+            let time = instant
+                .map(|i| hhmm(&location, i))
+                .unwrap_or_else(|| "\u{2014}".to_string());
+            let src = source_of(prayer);
             row(
                 prayer.name_en(),
                 prayer.name_ar(),
                 time,
                 Some(prayer) == next_name,
                 prayer.is_prayer(),
+                src == TimeSource::Rule,
+                instant.is_none(),
             )
         })
         .collect();
     ui.set_rows(ModelRc::new(VecModel::from(rows)));
+
+    // Explanation strip (Prism §5.3): polar state or any estimated event.
+    // Facts the engine cannot supply are OMITTED, never filled in.
+    let rule_label = match state.settings.config.high_latitude_rule {
+        HighLatitudeRule::MiddleOfTheNight => "Middle of the night",
+        HighLatitudeRule::SeventhOfTheNight => "Seventh of the night",
+        HighLatitudeRule::TwilightAngle => "Twilight angle",
+    };
+    let any_estimated = [
+        prov.fajr,
+        prov.sunrise,
+        prov.dhuhr,
+        prov.asr,
+        prov.maghrib,
+        prov.isha,
+    ]
+    .contains(&TimeSource::Rule);
+    let (explain_visible, explain_title, explain_body) = match prov.polar {
+        Some(PolarState::Day) => (
+            true,
+            format!("Midnight sun in {}", location.name),
+            format!(
+                "{} is inside the polar circle. At this time of year the sun never sets, so there is no sunrise or sunset to compute. {}",
+                location.name,
+                if prov.fajr == TimeSource::Rule || prov.isha == TimeSource::Rule {
+                    format!("Fajr and Isha are estimated using {rule_label}.")
+                } else {
+                    "Fajr and Isha have no defined time either.".to_string()
+                }
+            ),
+        ),
+        Some(PolarState::Night) => (
+            true,
+            format!("Polar night in {}", location.name),
+            format!(
+                "{} is inside the polar circle. At this time of year the sun never rises, so there is no sunrise or sunset to compute. {}",
+                location.name,
+                if prov.fajr == TimeSource::Rule || prov.isha == TimeSource::Rule {
+                    format!("Fajr and Isha are estimated using {rule_label}.")
+                } else {
+                    "Fajr and Isha have no defined time either.".to_string()
+                }
+            ),
+        ),
+        None if any_estimated => (
+            true,
+            "Some times are estimated".to_string(),
+            format!(
+                "The sun never reaches the twilight angle here today, so Fajr and Isha are estimated using {rule_label}. Sunrise and sunset are sun-computed."
+            ),
+        ),
+        None => (false, String::new(), String::new()),
+    };
+    ui.set_explain_visible(explain_visible);
+    ui.set_explain_title(explain_title.into());
+    ui.set_explain_body(explain_body.into());
+    ui.set_next_none_visible(next.is_none());
 }
 
-fn row(name: &str, name_ar: &str, time: String, is_next: bool, is_prayer: bool) -> Row {
+fn row(
+    name: &str,
+    name_ar: &str,
+    time: String,
+    is_next: bool,
+    is_prayer: bool,
+    estimated: bool,
+    is_none: bool,
+) -> Row {
     Row {
         name: name.into(),
         name_ar: name_ar.into(),
         time: time.into(),
         is_next,
         is_prayer,
+        estimated,
+        is_none,
     }
 }
 
@@ -767,6 +856,99 @@ fn apply_settings(ui: &MainWindow, state: &AppState) {
     ui.set_location_query(location.name.clone().into());
     ui.set_settings_location_tz(state.settings.location.timezone.clone().into());
     refresh_mosques_ui(ui, state);
+
+    // Phase 5 §5.1: rule rows with Quill's verified descriptions (verbatim).
+    ui.set_high_lat_rules(ModelRc::new(VecModel::from(vec![
+        RuleOption {
+            key: "middle_of_the_night".into(),
+            label: "Middle of the night".into(),
+            label_ar: "منتصف الليل".into(),
+            desc: "Sets Fajr half the night before sunrise and Isha half the night after sunset, when the sun never reaches the twilight angle.".into(),
+            desc_ar: "يقدّر الفجر قبل الشروق بنصف الليل، والعشاء بعد الغروب بنصف الليل، عندما لا تصل الشمس إلى زاوية الشفق.".into(),
+        },
+        RuleOption {
+            key: "seventh_of_the_night".into(),
+            label: "Seventh of the night".into(),
+            label_ar: "سُبع الليل".into(),
+            desc: "Sets Fajr one seventh of the night before sunrise and Isha one seventh of the night after sunset, when the sun never reaches the twilight angle.".into(),
+            desc_ar: "يقدّر الفجر قبل الشروق بسُبع الليل، والعشاء بعد الغروب بسُبع الليل، عندما لا تصل الشمس إلى زاوية الشفق.".into(),
+        },
+        RuleOption {
+            key: "twilight_angle".into(),
+            label: "Twilight angle".into(),
+            label_ar: "زاوية الشفق".into(),
+            desc: "Places Fajr and Isha at a fraction of the night set by the method's twilight angles, when the sun never reaches those angles.".into(),
+            desc_ar: "يضع الفجر والعشاء عند جزء من الليل تحدده زوايا الشفق للطريقة المختارة، عندما لا تصل الشمس إلى تلك الزوايا.".into(),
+        },
+    ])));
+    ui.set_selected_high_lat_rule(
+        match state.settings.config.high_latitude_rule {
+            HighLatitudeRule::MiddleOfTheNight => "middle_of_the_night",
+            HighLatitudeRule::SeventhOfTheNight => "seventh_of_the_night",
+            HighLatitudeRule::TwilightAngle => "twilight_angle",
+        }
+        .into(),
+    );
+
+    // Phase 5 §5.4: fine-tune steppers + the never-invisible adjustment summary.
+    let adj = &state.settings.config.adjustments;
+    ui.set_fine_tune(ModelRc::new(VecModel::from(vec![
+        adj.fajr as i32,
+        adj.dhuhr as i32,
+        adj.asr as i32,
+        adj.maghrib as i32,
+        adj.isha as i32,
+    ])));
+    let parts: Vec<String> = [
+        ("Fajr", adj.fajr),
+        ("Dhuhr", adj.dhuhr),
+        ("Asr", adj.asr),
+        ("Maghrib", adj.maghrib),
+        ("Isha", adj.isha),
+    ]
+    .iter()
+    .filter(|(_, v)| *v != 0)
+    .map(|(n, v)| format!("{n} {v:+} min"))
+    .collect();
+    ui.set_fine_tune_summary(parts.join(" · ").into());
+
+    // "How computed" expander: engine values only (Prism §5.4).
+    let method_label = match state.settings.config.method {
+        Method::MuslimWorldLeague => "Muslim World League",
+        Method::Egyptian => "Egyptian",
+        Method::Karachi => "Karachi",
+        Method::UmmAlQura => "Umm al-Qura",
+        Method::Dubai => "Dubai",
+        Method::MoonsightingCommittee => "Moonsighting Committee",
+        Method::NorthAmerica => "North America",
+        Method::Kuwait => "Kuwait",
+        Method::Qatar => "Qatar",
+        Method::Singapore => "Singapore",
+        Method::Tehran => "Tehran",
+        Method::Turkey => "Turkey",
+        Method::Custom { .. } => "Custom angles",
+    };
+    let rule_label = match state.settings.config.high_latitude_rule {
+        HighLatitudeRule::MiddleOfTheNight => "Middle of the night",
+        HighLatitudeRule::SeventhOfTheNight => "Seventh of the night",
+        HighLatitudeRule::TwilightAngle => "Twilight angle",
+    };
+    let rounding_label = match state.settings.config.rounding {
+        Rounding::Nearest => "nearest minute",
+        Rounding::Up => "up to the minute",
+        Rounding::None => "exact",
+    };
+    let mut summary = format!(
+        "Method: {method_label} · Madhab: {} · High-latitude rule: {rule_label} · Rounding: {rounding_label}",
+        match state.settings.config.madhab { Madhab::Shafi => "Shafi", Madhab::Hanafi => "Hanafi" }
+    );
+    if let Some(interval) = state.settings.config.isha_interval {
+        summary.push_str(&format!(" · Isha interval: {interval} min after Maghrib"));
+    }
+    if !parts.is_empty() {
+        summary.push_str(&format!(" · Adjustments: {}", parts.join(", ")));
+    }
+    ui.set_computed_summary(summary.into());
     ui.set_city_results(ModelRc::new(VecModel::from(Vec::<CityRow>::new())));
 
     let (left, right) = method_rows();
@@ -2006,6 +2188,73 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ui.set_manual_error("".into());
                 run_picker_search(&ui, &s, "");
                 ui.set_page("city-picker".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_set_high_lat(move |key| {
+            let mut s = state.lock().unwrap();
+            if let Some(rule) = decode::<HighLatitudeRule>(&key) {
+                s.settings.config.high_latitude_rule = rule;
+                s.changed();
+                if let Some(wake) = &s.wake {
+                    let _ = wake.send(());
+                }
+                if let Some(ui) = weak.upgrade() {
+                    apply_home(&ui, &s);
+                    apply_settings(&ui, &s);
+                }
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        let state = Arc::clone(&state);
+        ui.on_set_fine_tune(move |prayer, value| {
+            let mut s = state.lock().unwrap();
+            let v = value.clamp(-30, 30) as i64;
+            let adj = &mut s.settings.config.adjustments;
+            match prayer.as_str() {
+                "fajr" => adj.fajr = v,
+                "dhuhr" => adj.dhuhr = v,
+                "asr" => adj.asr = v,
+                "maghrib" => adj.maghrib = v,
+                "isha" => adj.isha = v,
+                _ => return,
+            }
+            s.changed();
+            if let Some(wake) = &s.wake {
+                let _ = wake.send(());
+            }
+            if let Some(ui) = weak.upgrade() {
+                apply_home(&ui, &s);
+                apply_settings(&ui, &s);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_show_explain(move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_explain_visible(true);
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_explain_change_rule(move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_page("settings".into());
+            }
+        });
+    }
+    {
+        let weak = ui.as_weak();
+        ui.on_explain_why_rules(move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.set_page("settings".into());
             }
         });
     }

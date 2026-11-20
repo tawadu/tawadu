@@ -9,7 +9,7 @@
 //  - Arabic and Latin never share one `text:` string. The bidi algorithm then
 //    reorders the runs and the words come out of line. Each run gets its own Text.
 
-import { AthkarItemView, CityResult, CityRow, ContextChip, CreditPack, CreditRow, EventVoiceRow, MethodRow, MosqueProfile, OptionRow, PackRow, Row, VoiceOption } from "types.slint";
+import { AthkarItemView, CityResult, CityRow, ContextChip, CreditPack, CreditRow, EventVoiceRow, MethodRow, MosqueProfile, OptionRow, PackRow, Row, RuleOption, VoiceOption } from "types.slint";
 
 // Design tokens — Plaster theme. Declared here (not in an imported file) so the
 // Rust side can reach the global and switch themes at runtime.
@@ -615,6 +615,18 @@ export component MainWindow inherits Window {
     in property <[OptionRow]> tz_results;
     in property <string> manual_error;
     in property <string> settings_location_tz;
+    // ---- Phase 5 high-latitude honesty (Prism §5, Quill §4.3) ----
+    in property <[RuleOption]> high_lat_rules;
+    in property <string> selected_high_lat_rule;
+    in property <bool> explain_visible;
+    in property <string> explain_title;
+    in property <string> explain_body;
+    in property <bool> next_none_visible;
+    in-out property <bool> how_computed_open;
+    in property <string> computed_summary;
+    in property <string> fine_tune_summary;
+    in property <[int]> fine_tune;
+    in-out property <bool> fine_tune_open;
     in property <[MethodRow]> methods_left;
     in property <[MethodRow]> methods_right;
     in property <string> selected_method;
@@ -696,6 +708,11 @@ export component MainWindow inherits Window {
     callback set-mosque-offset(string, string, int);
     callback remove-mosque(string);
     callback done-editing();
+    callback set-high-lat(string);
+    callback set-fine-tune(string, int);
+    callback show-explain();
+    callback explain-change-rule();
+    callback explain-why-rules();
     callback set-method(string);
     callback set-madhab(string);
     callback set-high-latitude(string);
@@ -944,12 +961,67 @@ export component MainWindow inherits Window {
                                 color: row.is_prayer ? Palette.ink : Palette.ink-muted;
                             }
                             Rectangle { }
-                            RowText {
-                                text: row.time;
-                                font-size: 15px;
-                                font-weight: 500;
-                                color: Palette.ink;
+                            if (row.is_none || row.estimated) : Rectangle {
+                                width: 6px;
+                                height: 6px;
+                                border-radius: 3px;
+                                background: Palette.ink-muted;
                             }
+                            VerticalLayout {
+                                spacing: 0px;
+                                alignment: center;
+                                RowText {
+                                    text: row.time;
+                                    font-size: 15px;
+                                    font-weight: 500;
+                                    color: row.is_none ? Palette.ink-muted : Palette.ink;
+                                }
+                                if (row.estimated) : Text {
+                                    text: "Estimated";
+                                    font-size: 10px;
+                                    color: Palette.ink-muted;
+                                    horizontal-alignment: end;
+                                }
+                                if (row.is_none) : Text {
+                                    text: "No defined time";
+                                    font-size: 10px;
+                                    color: Palette.ink-muted;
+                                    horizontal-alignment: end;
+                                }
+                            }
+                        }
+                        if (row.is_none || row.estimated) : TouchArea {
+                            clicked => { show-explain(); }
+                        }
+                    }
+                    if (explain_visible) : Rectangle {
+                        background: Palette.surface-secondary;
+                        border-radius: Palette.radius-small;
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 6px;
+                            Text { text: explain_title; font-size: 14px; font-weight: 600; color: Palette.ink; wrap: word-wrap; }
+                            Text { text: explain_body; font-size: 12px; color: Palette.ink; wrap: word-wrap; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Action { label: "Change rule"; primary: false; triggered => { explain-change-rule(); } }
+                                Action { label: "Why these rules?"; primary: false; triggered => { explain-why-rules(); } }
+                            }
+                        }
+                    }
+                    Action {
+                        label: how_computed_open ? "Hide computation details" : "How these times are computed";
+                        primary: false;
+                        triggered => { how_computed_open = !how_computed_open; }
+                    }
+                    if (how_computed_open) : VerticalLayout {
+                        spacing: 4px;
+                        Text { text: computed_summary; font-size: 12px; color: Palette.ink-muted; wrap: word-wrap; }
+                        Text {
+                            text: "Different sources can differ by about 2 minutes. Fine-tune any prayer below.";
+                            font-size: 11px;
+                            color: Palette.ink-muted;
+                            wrap: word-wrap;
                         }
                     }
                 }
@@ -1216,17 +1288,48 @@ export component MainWindow inherits Window {
                             selected: selected_madhab;
                             picked(value) => { set-madhab(value); }
                         }
-                        Segmented {
-                            label: "High lat.";
-                            options: high_latitude_options;
-                            selected: selected_high_latitude;
-                            picked(value) => { set-high-latitude(value); }
+                        Text { text: "High-latitude rule"; font-size: 13px; font-weight: 600; color: Palette.ink; }
+                        for rule in high_lat_rules : Rectangle {
+                            background: rule.key == selected_high_lat_rule ? Palette.accent-soft : Palette.surface;
+                            border-color: rule.key == selected_high_lat_rule ? Palette.accent : Palette.border;
+                            border-width: 1px;
+                            border-radius: Palette.radius-small;
+                            VerticalLayout {
+                                padding: 10px;
+                                spacing: 4px;
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text { text: rule.label; font-size: 13px; font-weight: 600; color: Palette.ink; }
+                                    Text { text: rule.label-ar; font-size: 12px; color: Palette.ink-muted; horizontal-alignment: end; }
+                                }
+                                Text { text: rule.desc; font-size: 11px; color: Palette.ink-muted; wrap: word-wrap; }
+                            }
+                            TouchArea { clicked => { set-high-lat(rule.key); } }
+                        }
+                        Text {
+                            text: "These rules change Fajr and Isha only, and only near the polar circles. They never create a sunrise or sunset.";
+                            font-size: 11px;
+                            color: Palette.ink-muted;
+                            wrap: word-wrap;
                         }
                         Segmented {
                             label: "Rounding";
                             options: rounding_options;
                             selected: selected_rounding;
                             picked(value) => { set-rounding(value); }
+                        }
+                        Action {
+                            label: fine_tune_open ? "Hide fine-tune" : (fine_tune_summary == "" ? "Fine-tune times" : "Fine-tune times · " + fine_tune_summary);
+                            primary: false;
+                            triggered => { fine_tune_open = !fine_tune_open; }
+                        }
+                        if (fine_tune_open) : VerticalLayout {
+                            spacing: 4px;
+                            Stepper { label: "Fajr"; label-ar: "الفجر"; value: fine_tune[0]; step: 1; min-value: -30; max-value: 30; changed(v) => { set-fine-tune("fajr", v); } }
+                            Stepper { label: "Dhuhr"; label-ar: "الظهر"; value: fine_tune[1]; step: 1; min-value: -30; max-value: 30; changed(v) => { set-fine-tune("dhuhr", v); } }
+                            Stepper { label: "Asr"; label-ar: "العصر"; value: fine_tune[2]; step: 1; min-value: -30; max-value: 30; changed(v) => { set-fine-tune("asr", v); } }
+                            Stepper { label: "Maghrib"; label-ar: "المغرب"; value: fine_tune[3]; step: 1; min-value: -30; max-value: 30; changed(v) => { set-fine-tune("maghrib", v); } }
+                            Stepper { label: "Isha"; label-ar: "العشاء"; value: fine_tune[4]; step: 1; min-value: -30; max-value: 30; changed(v) => { set-fine-tune("isha", v); } }
                         }
                     }
                 }

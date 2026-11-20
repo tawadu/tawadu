@@ -6,6 +6,17 @@ export struct Row {
     time: string,
     is_next: bool,
     is_prayer: bool,
+    estimated: bool,   // Phase 5: rule-produced time (muted caption)
+    is_none: bool,     // Phase 5: genuinely undefined — em dash, info dot
+}
+
+// Phase 5 high-latitude rule rows (Prism §5.1, Quill §4.3 verbatim).
+export struct RuleOption {
+    key: string,
+    label: string,
+    label-ar: string,
+    desc: string,
+    desc-ar: string,
 }
 
 export struct CityRow {
