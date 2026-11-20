@@ -498,6 +498,23 @@ fn apply_home(ui: &MainWindow, state: &AppState) {
             Some((t, b)) => (true, t, b),
             None => (false, String::new(), String::new()),
         };
+    // Sentinel F2: the variance figure is engine-derived (max Fajr/Isha
+    // spread across the supported methods here today) — never a constant.
+    let variance_line = match prayer::method_spread_minutes(
+        location.local(now).date_naive(),
+        location.coordinates,
+        &state.settings.config,
+    ) {
+        Some(1) => "Different sources can differ by about 1 minute. Fine-tune any prayer below."
+            .to_string(),
+        Some(n) => format!(
+            "Different sources can differ by about {n} minutes. Fine-tune any prayer below."
+        ),
+        None => {
+            "Different sources can give different times. Fine-tune any prayer below.".to_string()
+        }
+    };
+    ui.set_variance_line(variance_line.into());
     ui.set_explain_visible(explain_visible);
     ui.set_explain_title(explain_title.into());
     ui.set_explain_body(explain_body.into());

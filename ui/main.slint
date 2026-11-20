@@ -671,6 +671,7 @@ export component MainWindow inherits Window {
     in property <bool> next_none_visible;
     in-out property <bool> how_computed_open;
     in property <string> computed_summary;
+    in property <string> variance_line;
     in property <string> fine_tune_summary;
     in property <[int]> fine_tune;
     in-out property <bool> fine_tune_open;
@@ -1092,7 +1093,7 @@ export component MainWindow inherits Window {
                         spacing: 4px;
                         Text { text: computed_summary; font-size: 12px; color: Palette.ink-muted; wrap: word-wrap; }
                         Text {
-                            text: "Different sources can differ by about 2 minutes. Fine-tune any prayer below.";
+                            text: variance_line;
                             font-size: 11px;
                             color: Palette.ink-muted;
                             wrap: word-wrap;

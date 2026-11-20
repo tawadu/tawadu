@@ -538,6 +538,64 @@ pub fn provenance(date: NaiveDate, coordinates: Coordinates, config: &PrayerConf
     }
 }
 
+/// Honest variance figure (Sentinel F2, Atlas decision 1): today's MAX
+/// Fajr/Isha spread across the supported named methods at this location,
+/// rounded to the nearest minute. None when no event has two computable
+/// method times (e.g. polar midsummer) or the spread is zero — the UI then
+/// renders a non-numeric fallback, NEVER a typed-in constant. Pure.
+pub fn method_spread_minutes(
+    date: NaiveDate,
+    coordinates: Coordinates,
+    base: &PrayerConfig,
+) -> Option<u32> {
+    const METHODS: [Method; 12] = [
+        Method::MuslimWorldLeague,
+        Method::Egyptian,
+        Method::Karachi,
+        Method::UmmAlQura,
+        Method::Dubai,
+        Method::MoonsightingCommittee,
+        Method::NorthAmerica,
+        Method::Kuwait,
+        Method::Qatar,
+        Method::Singapore,
+        Method::Tehran,
+        Method::Turkey,
+    ];
+    let mut fajrs: Vec<DateTime<Utc>> = Vec::new();
+    let mut ishas: Vec<DateTime<Utc>> = Vec::new();
+    for method in METHODS {
+        let cfg = PrayerConfig {
+            method,
+            ..base.clone()
+        };
+        let t = compute(date, coordinates, &cfg);
+        if let Some(f) = t.fajr {
+            fajrs.push(f);
+        }
+        if let Some(i) = t.isha {
+            ishas.push(i);
+        }
+    }
+    let spread = |times: &[DateTime<Utc>]| -> Option<i64> {
+        if times.len() < 2 {
+            return None;
+        }
+        let min = times.iter().min().unwrap();
+        let max = times.iter().max().unwrap();
+        Some((*max - *min).num_seconds())
+    };
+    let secs = [spread(&fajrs), spread(&ishas)]
+        .into_iter()
+        .flatten()
+        .max()?;
+    if secs <= 0 {
+        return None;
+    }
+    // Nearest-minute rounding (honest: never overstate precision).
+    Some(((secs + 30) / 60) as u32)
+}
+
 /// Compose the explanation strip PER EVENT from the provenance (Sentinel
 /// F1): name only the events actually produced by the rule; attribute the
 /// rule only when the value is rule-SENSITIVE; state Undefined events
@@ -984,6 +1042,33 @@ mod tests {
         // Default method UmmAlQura: Isha = fixed 90-min interval after
         // sunset — the high-latitude rule never applies to it.
         assert_eq!(p.isha, TimeSource::Sun);
+    }
+
+    // ---- F2 (Sentinel): the variance figure must be engine-derived ----
+
+    #[test]
+    fn method_spread_is_engine_derived_not_a_constant() {
+        // Riyadh: Sentinel measured a 20-minute Fajr spread across five
+        // methods — the honest figure is substantial, never the typed-in 2.
+        let spread = method_spread_minutes(
+            NaiveDate::from_ymd_opt(2027, 6, 21).unwrap(),
+            Coordinates::new(24.7136, 46.6753),
+            &PrayerConfig::default(),
+        )
+        .expect("Riyadh has computable twilight times");
+        assert!((10..=90).contains(&spread), "honest spread, got {spread}");
+    }
+
+    #[test]
+    fn method_spread_is_none_when_no_method_yields_twilight() {
+        // Tromsø midsummer: every method yields None for Fajr AND Isha —
+        // no figure can be supplied; the UI renders the non-numeric fallback.
+        assert!(method_spread_minutes(
+            NaiveDate::from_ymd_opt(2027, 6, 21).unwrap(),
+            tromsco(),
+            &PrayerConfig::default(),
+        )
+        .is_none());
     }
 
     // ---- F1 (Sentinel): the strip text must be ENGINE-bound per event ----
